@@ -17,7 +17,7 @@ from PIL import Image
 
 from ..core.config import Settings
 from ..core.ffmpeg import extract_frames_at, extract_frames_from_url, extract_thumbnails
-from ..core.models import Chunk, Frame, Segment
+from ..core.models import Chunk, Frame, SceneSpan, Segment
 from .chunking import bigrams
 
 log = logging.getLogger(__name__)
@@ -77,22 +77,16 @@ def detect_cuts(
     return cuts
 
 
-def detect_stable(
+def detect_scene_spans(
     thumbs: list[tuple[float, Path]],
-    distance: int = 12,
-    min_stable: int = 3,
-    long_segment: float = _LONG_SEGMENT,
-    long_step: float = _LONG_STEP,
-) -> list[float]:
-    """找「画面稳定段」，返回每段的**最后一帧**时间点。
+    distance: int = 14,
+    min_stable: int = _STABLE_MIN,
+) -> list[SceneSpan]:
+    """把时间轴切成「画面没变」的连续区间，覆盖全片。
 
-    为什么不再按「变化点」抽：PPT 常带逐条动画（标题 → 第一条 → 第二条…），
-    每一帧都在变。按变化点截，笔记里会塞满「字还没出全」的中间态；
-    真正有用的是全部内容放完之后那一帧。所以这里先找「连续 N 秒不再变化」
-    的区间，再取区间末尾——那一刻画面最完整。
-
-    一页讲很久（超过 long_segment）时，末尾一张不够，按 long_step 往回补点，
-    防止后半段补的板书/高亮被漏掉。
+    以前只保留每段的末帧时间点，区间本身被丢掉了。可"博主暂停下来讲这一帧"
+    恰恰要靠区间才能判断：这句讲解落在这段画面停留期间，讲的就是这一帧。
+    所以这里连不稳定的短段也一并输出（stable=False），保证每句话都有归属。
     """
     if len(thumbs) < 2:
         return []
@@ -105,7 +99,7 @@ def detect_stable(
         except Exception:
             hashes.append(None)
 
-    points: list[float] = []
+    spans: list[SceneSpan] = []
     n = len(hashes)
     i = 0
     while i < n:
@@ -114,17 +108,63 @@ def detect_stable(
                and (hashes[j] - hashes[j + 1]) < distance):
             j += 1
         run = j - i + 1
-        if run >= min_stable:
-            start_ts, end_ts = thumbs[i][0], thumbs[j][0]
-            points.append(end_ts)                 # 稳定段末尾 = 内容最全的一帧
-            if long_step > 0 and (end_ts - start_ts) > long_segment:
-                t = start_ts + long_step
-                while t < end_ts - 1.0:
-                    points.append(t)
-                    t += long_step
+        start_ts, end_ts = thumbs[i][0], thumbs[j][0]
+        stable = run >= min_stable
+        # 稳定段取末帧（内容放全的那一刻）；一直在动的段取中点
+        rep = end_ts if stable else (start_ts + end_ts) / 2
+        spans.append(SceneSpan(start_ts, end_ts, rep, stable))
         i = j + 1
 
+    return spans
+
+
+def stable_points(
+    spans: list[SceneSpan],
+    long_segment: float = _LONG_SEGMENT,
+    long_step: float = _LONG_STEP,
+) -> list[float]:
+    """稳定段的取帧时间点：段末 + 长段往回补点（沿用原来的判定）。"""
+    points: list[float] = []
+    for span in spans:
+        if not span.stable:
+            continue
+        points.append(span.end)                # 段末 = 内容最全的一帧
+        if long_step > 0 and (span.end - span.start) > long_segment:
+            t = span.start + long_step
+            while t < span.end - 1.0:
+                points.append(t)
+                t += long_step
     return sorted(set(points))
+
+
+def attach_span(frame: Frame, spans: list[SceneSpan]) -> None:
+    """给一张帧标上它所属的画面停留区间（后面音画锚定要用）。"""
+    if not spans:
+        return
+    best: SceneSpan | None = None
+    best_gap = float("inf")
+    for span in spans:
+        gap = 0.0 if span.start <= frame.ts <= span.end else min(
+            abs(frame.ts - span.start), abs(frame.ts - span.end)
+        )
+        if gap < best_gap:
+            best, best_gap = span, gap
+    if best is not None:
+        frame.seg_start, frame.seg_end = best.start, best.end
+
+
+def detect_stable(
+    thumbs: list[tuple[float, Path]],
+    distance: int = 12,
+    min_stable: int = 3,
+    long_segment: float = _LONG_SEGMENT,
+    long_step: float = _LONG_STEP,
+) -> list[float]:
+    """兼容旧接口：找「画面稳定段」，返回每段的**最后一帧**时间点。"""
+    return stable_points(
+        detect_scene_spans(thumbs, distance=distance, min_stable=min_stable),
+        long_segment=long_segment, long_step=long_step,
+    )
 
 
 def generate_candidates(
@@ -133,32 +173,41 @@ def generate_candidates(
     duration: float,
     workdir: Path,
     segments: list[Segment] | None = None,
+    spans_out: list[SceneSpan] | None = None,
 ) -> list[Frame]:
-    """三路候选：稳定画面段 / 讲解峰值 / 均匀兜底。"""
+    """三路候选：稳定画面段 / 讲解峰值 / 均匀兜底。
+
+    spans_out 用来把**全片**画面停留区间交给调用方：音画锚定需要它判断
+    「这句讲解发生在哪一页」，而候选帧只覆盖部分区间，反推会漏段。
+    """
     frames: list[Frame] = []
+    spans: list[SceneSpan] = []
 
     # 1. 稳定画面段：等画面停下来再截，跳过 PPT 动画的中间态
     try:
         thumbs = extract_thumbnails(str(video_path), str(workdir / "thumbs"))
-        points = detect_stable(
+        spans = detect_scene_spans(
             thumbs,
             distance=settings.scene_phash_distance,
             min_stable=_STABLE_MIN,
-            long_segment=_LONG_SEGMENT,
-            long_step=_LONG_STEP,
         )
+        points = stable_points(spans, _LONG_SEGMENT, _LONG_STEP)
         cap = _CUT_CAP.get(settings.note_detail, 240)
         if len(points) > cap:
             step = len(points) / cap
             points = [points[int(i * step)] for i in range(cap)]
-        log.info("缩略图 %d 张，检出稳定画面段 %d 个（要求静止 %d 秒）",
-                 len(thumbs), len(points), _STABLE_MIN)
+        log.info("缩略图 %d 张，画面停留段 %d 个（稳定 %d 个，要求静止 %d 秒）",
+                 len(thumbs), len(spans), sum(1 for s in spans if s.stable), _STABLE_MIN)
+        if spans_out is not None:
+            spans_out.extend(spans)
         if points:
             for ts, path in extract_frames_at(
                 str(video_path), str(workdir / "scene"), points,
                 max_edge=settings.frame_max_edge,
             ):
-                frames.append(Frame(ts=ts, path=str(path), origin="scene"))
+                frame = Frame(ts=ts, path=str(path), origin="scene")
+                attach_span(frame, spans)
+                frames.append(frame)
     except Exception as exc:
         log.warning("稳定画面抽帧失败：%s", exc)
 
@@ -171,7 +220,10 @@ def generate_candidates(
                 str(video_path), str(workdir / "uniform"), stamps,
                 max_edge=settings.frame_max_edge,
             ):
-                frames.append(Frame(ts=ts, path=str(path), origin="uniform"))
+                frame = Frame(ts=ts, path=str(path), origin="uniform")
+                # 均匀帧也归到它所在的那段画面，锚定时才知道"讲的是哪张卡"
+                attach_span(frame, spans)
+                frames.append(frame)
         except Exception as exc:
             log.warning("均匀抽帧失败：%s", exc)
 
@@ -245,11 +297,19 @@ def score_and_select(
     settings: Settings,
     frames: list[Frame],
     chunks: list[Chunk],
+    must_keep: set[str] | None = None,
 ) -> list[Frame]:
-    """综合打分后贪心择优，返回最终要放进笔记的帧。"""
+    """综合打分后贪心择优，返回最终要放进笔记的帧。
+
+    must_keep 是音画锚定选出的「某段讲解正在讲的那一张画面」的路径集合。
+    这些帧加分优先入选——否则按信息量排序时，博主讲的那一页可能被同一块里
+    字更多的另一页挤掉，笔记就会出现「文字讲 A、配图是 B」。
+    加分只改优先级，不绕过档位的每段上限与去重规则。
+    """
     if not frames:
         return []
 
+    must_keep = must_keep or set()
     chunk_of = _chunk_index_map(chunks, frames)
     max_sharp = max((f.sharpness for f in frames), default=1.0) or 1.0
 
@@ -266,12 +326,15 @@ def score_and_select(
         if frame.text_density <= 0:
             frame.text_density = text_score(frame.path)
         info = max(text_norm, frame.text_density)
+        anchor_bonus = 1.0 if frame.path in must_keep else 0.0
         if info < 0.12 and frame.origin != "cue":
-            frame.score = 0.0
+            # 画面上没文字也要留一张：博主正讲的就是这一帧，
+            # 笔记里要点带时间码，缺图会让读者对不上。
+            frame.score = 0.15 + anchor_bonus if anchor_bonus else 0.0
             continue
 
         frame.score = (0.35 * text_norm + 0.20 * sharp_norm + 0.25 * rel
-                       + 0.10 + 0.15 * frame.text_density)
+                       + 0.10 + 0.15 * frame.text_density + anchor_bonus)
 
     ordered = sorted(frames, key=lambda f: f.score, reverse=True)
     selected: list[Frame] = []

@@ -1,7 +1,6 @@
 """用假 LLM 验证 build_outline 的解析与渲染（不花钱、不联网）。"""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -104,8 +103,8 @@ def main() -> int:
     assert exporter._render_problems(empty) == []
     print("[4] 空大纲不会产生假内容")
 
-    # ---- 配图：一级/二级各配一张，模型留空的段不配，且不重复用同一张 ----
-    print("\n[5] 配图逻辑")
+    # ---- 配图：旧数据走 cover_ts 兜底，容差收紧后不再拿一分钟外的错图 ----
+    print("\n[5] 配图逻辑（旧数据兜底）")
     assert outline[0]["cover_ts"] == 190.0, outline[0]["cover_ts"]   # 03:10
     assert outline[0]["groups"][0]["cover_ts"] == 270.0               # 04:30
     assert outline[0]["groups"][1]["cover_ts"] == 0.0                 # 留空 → 不配图
@@ -118,13 +117,33 @@ def main() -> int:
         )
     imap = {id(f): f"assets/of{i}.jpg" for i, ch in enumerate(note.chunks) for f in ch.frames}
     body = "\n".join(exporter._render_outline(note, imap))
-    # 河内(190→195) 玩的(270→275) 岘港(760→700) 三个段有图；"吃的"没有
+    # 河内 190→195、玩的 270→275 各一张；"吃的"留空不配。
+    # 岘港 cover_ts 12:40 与最近的 11:40 帧差 60 秒：旧逻辑 75 秒容差会硬塞错图，
+    # 现在 ±8 秒容差下宁可不配 —— 这正是音画锚定要修的「张冠李戴」。
     used = [line for line in body.splitlines() if line.startswith("![")]
     print("    生成的图片行：", used)
-    assert len(used) == 3, used
-    assert len(set(used)) == 3, "同一张图不应被两段重复使用"
+    assert len(used) == 2, used
+    assert len(set(used)) == 2, "紧挨着的两段不该重复贴同一张图"
     assert body.index("assets/of1.jpg") < body.index("#### 玩的")
-    print("[6] 每段一张、缺内容就跳过、不重复 — 全部通过")
+    assert "assets/of3.jpg" not in body, "隔了一分钟的旧 cover_ts 不能再拿来配图"
+    print("[6] 旧数据兜底、容差收紧、连续去重 — 全部通过")
+
+    # ---- 锚定模式：要点带真实时间码，同一帧讲两个知识点时允许出现两次 ----
+    print("\n[7] 音画锚定模式")
+    anchored = [{
+        "title": "语法", "summary": "", "ts": 195.0, "cover_ts": 195.0,
+        "groups": [
+            {"title": "A", "items": ["[03:15] 定语后置"], "items_ts": [195.0],
+             "ts": 195.0, "cover_ts": 195.0},
+            {"title": "B", "items": ["[03:15] 博主补充的分析"], "items_ts": [195.0],
+             "ts": 195.0, "cover_ts": 195.0},
+        ],
+    }]
+    note2 = VideoNote(meta=meta, chunks=note.chunks, outline=anchored)
+    body2 = "\n".join(exporter._render_outline(note2, imap))
+    assert "`03:15`" in body2 and "t=195" in body2, "每条要点带时间码与跳回原片的链接"
+    assert "定语后置" in body2 and "博主补充的分析" in body2, "无字幕口播补充也在要点里"
+    print("[7] 要点时间码 + 原片跳转 — 全部通过")
     return 0
 
 

@@ -15,7 +15,8 @@ from ..core.errors import CancelledError
 from ..core.llm import LLMClient
 from ..core.models import Chapter, Chunk, Problem, VideoMeta
 from ..core.paths import fmt_ts
-from . import frame_caption, mathfmt
+from . import anchors as anchors_mod
+from . import chunking, frame_caption, mathfmt
 
 log = logging.getLogger(__name__)
 
@@ -32,20 +33,25 @@ _SYSTEM = (
 
 _CHUNK_TMPL = """视频《{title}》的片段，时间 {start} 至 {end}。
 
-【讲解字幕】
-{text}
+下面是按时间排好的「画面 + 同期讲解」音画对。每一组里：
+- 【画面】是当时屏幕上本来就有的文字（例句 / PPT / 板书）；
+- 【讲解】是这段时间博主说的话，常常没有字幕，是他对这一帧的补充和分析；
+- 方括号里的「画面 MM:SS」就是这一组对应的真实画面时间点。
 
-【画面要点（从画面上的 PPT/板书提炼，比转写可信）】
-{ocr}
+{material}
 
 请输出 JSON：
 {{
   "title": "本段小标题，不超过 14 字",
   "summary": "2-4 句话概括这段讲了什么、结论是什么",
   "bullets": ["要点，每条不超过 40 字"],
+  "bullet_ts": ["00:06", "00:36"],
   "keywords": ["关键词"]
 }}
-要求：bullets 3-6 条，必须是材料中真实出现的信息；keywords 2-5 个。"""
+要求：
+- bullets 3-6 条，必须是材料中真实出现的信息；讲解里的补充、分析、语法点也要写进要点，不能只抄画面上的字；
+- bullet_ts 与 bullets 一一对应，每条写它讲的那组方括号里的「画面 MM:SS」，照抄材料里的时间码，不要自己编；
+  一条要点综合了多组材料就取最主要那一组；keywords 2-5 个。"""
 
 _CHAPTER_TMPL = """下面是视频《{title}》按时间顺序切出的 {n} 个内容块。
 
@@ -78,8 +84,10 @@ _GLOBAL_TMPL = """视频《{title}》（UP主：{uploader}，时长 {duration}�
 _OUTLINE_TMPL = """你在为视频《{title}》（UP主 {uploader}，时长 {duration}）写一份结构化笔记，
 读者是"没看过视频、想快速掌握内容"的人。
 
-下面是素材材料。【讲解】是字幕/语音转写（可能有同音错字）；
-【画面】是从该时刻视频画面（PPT/板书/界面）提炼出的文字要点，可信度更高。
+下面是素材材料，按时间排成一组组「画面 + 同期讲解」。
+【画面】是当时屏幕上本来就有的文字（例句 / PPT / 板书），可信度更高；
+【讲解】是这段时间博主说的话，可能没有字幕，是他对这一帧的补充与分析。
+每组方括号里的「画面 MM:SS」是这组对应的真实画面时间点。
 
 {material}
 
@@ -122,7 +130,14 @@ _OUTLINE_TMPL = """你在为视频《{title}》（UP主 {uploader}，时长 {dur
 （每条例句最多一处），用于黄色荧光笔高亮。只圈关键词/关键数字/关键结论，不要整句包住；
 不必每条都标，挑真正重要的来标即可（约三分之一的要点标一处）。== 必须成对出现。
 
-【七、用好画面材料】
+【六之二、每条要点都要带上它讲的那一刻】
+items 里每一条都写成 "[MM:SS] 要点内容"，方括号里的时间码**照抄**该要点所讲那组材料
+的「画面 MM:SS」，不要写讲解区间、不要自己编、不要省略。
+一条要点综合了相邻两组材料时，取它主要讲的那组。
+这个时间码会用来在笔记里配对应画面并跳回原视频，写错就会张冠李戴。
+
+【七、用好画面材料，讲的和画面要对得上】
+- 一条要点必须在它讲的那组材料附近，不要跨组把不同画面的内容揉成一条；
 - 【画面】里的专有名词、术语、公式、数字、表格数据比转写可信，冲突时以画面为准；
 - 画面里的 PPT 题目/小标题适合直接作为一级或二级主题名，与讲解互相印证；
 - 画面给出的定义、公式、表格数据必须保留成要点，不要只写"讲解了某公式"；
@@ -157,7 +172,7 @@ _OUTLINE_TMPL = """你在为视频《{title}》（UP主 {uploader}，时长 {dur
       "summary": "一句话说清这段整体是什么情况",
       "cover_ts": "12:30",
       "groups": [
-        {{"title": "二级主题", "cover_ts": "13:10", "items": ["要点1", "要点2"]}}
+        {{"title": "二级主题", "cover_ts": "13:10", "items": ["[13:10] 要点1", "[13:24] 要点2"]}}
       ]
     }}
   ],
@@ -176,8 +191,9 @@ _OUTLINE_TMPL = """你在为视频《{title}》（UP主 {uploader}，时长 {dur
 要求：一级主题 2-8 个；每个一级下 1-5 个二级；每个二级 1-6 条要点；
 每条要点 15-60 字，一句话说完，不要写成段落；problems 最多 3 道，没有题目就给 []。
 
-关于 cover_ts（配图时间点）：一级主题和二级主题**都要给**，
-写成材料里括号里出现过的时间（MM:SS 或 HH:MM:SS，如 "12:30"），用来从视频里截一张代表画面。
+关于 cover_ts（兜底配图时间点）：一级主题和二级主题都要给，
+写成材料里出现过的时间（MM:SS 或 HH:MM:SS，如 "12:30"）。
+配图优先用 items 里的 [MM:SS]，cover_ts 只在漏写时间码时兜底。
 - 挑"画面信息最足"的那一刻：PPT、地图、菜单、界面、招牌、实物特写、人物出镜讲解；
 - 不要挑空镜、转场、黑屏、糊掉的动作画面；
 - 同一个主题下，二级之间的时间点尽量错开，不要都指到同一秒；
@@ -237,6 +253,57 @@ def parse_cover_ts(value: Any, duration: float) -> float:
     return ts
 
 
+def snap_anchor_ts(ts: float, chunks: list[Chunk], tol: float = 15.0) -> float:
+    """把模型抄来的时间码吸附到它讲的那一帧。
+
+    模型偶尔会抄成讲解区间的起点（例如材料写 [00:02–00:30｜画面 00:12]，
+    它抄了 00:02），或写错几秒。只要这个时刻落在某段画面停留区间内，
+    就直接归到那张画面——这正是「博主暂停讲这一帧」的定义，不受容差限制；
+    落在区间外再按最近的真实帧时刻吸附一次，避免落到别的知识点上。
+    """
+    if ts <= 0:
+        return 0.0
+    anchors = [a for c in chunks for a in c.anchors if a.frame_ts > 0]
+    for a in anchors:
+        if a.span_end > a.span_start and a.span_start - 0.5 <= ts <= a.span_end + 0.5:
+            return a.frame_ts
+    times = [a.frame_ts for a in anchors]
+    if not times:
+        return ts
+    best = min(times, key=lambda t: abs(t - ts))
+    return best if abs(best - ts) <= tol else ts
+
+
+def _infer_item_times(items: list[str], chunks: list[Chunk]) -> list[float]:
+    """大纲模型漏写 [MM:SS] 时，从逐块要点继承它讲的画面时刻。
+
+    逐块总结和大纲看的是同一批材料，措辞会改写但关键词大半重合。
+    只在整组都没时间码时启用，且相似度不够就留 0 —— 宁可走 cover_ts
+    兜底，也不要凭一点点字面重合把要点指到错的画面上。
+    """
+    refs = [
+        (chunking.bigrams(b), ts)
+        for c in chunks
+        for b, ts in zip(c.bullets, c.bullet_ts)
+        if ts > 0
+    ]
+    if not refs:
+        return [0.0] * len(items)
+    out: list[float] = []
+    for text in items:
+        grams = chunking.bigrams(text)
+        if not grams:
+            out.append(0.0)
+            continue
+        best_score, best_ts = 0.0, 0.0
+        for ref, ts in refs:
+            score = len(grams & ref) / len(grams)
+            if score > best_score:
+                best_score, best_ts = score, ts
+        out.append(best_ts if best_score >= 0.55 else 0.0)
+    return out
+
+
 def _density_note(level: str) -> str:
     """按笔记详细度追加一段「写多细」的要求，覆盖提示词里的默认条数上限。"""
     if level == "detailed":
@@ -267,9 +334,12 @@ def build_outline(
     if client is None or not chunks:
         return [], [], []
 
-    # 画面要点（PPT 题目/分点）随讲解一起给大纲：课件的结构可以直接长进笔记里。
-    # 一块最多给 600 字画面材料，避免长视频把 prompt 撑爆。
+    # 材料改成「画面 + 同期讲解」成对、带真实时间码的锚点。
+    # 以前讲解和画面各是一整坨没时间的正文，模型只能猜配图时间；
+    # 现在每条要点都能抄到它讲的那帧，位置才有据可依。
     def _block(c: Chunk) -> str:
+        if c.anchors:
+            return anchors_mod.anchor_material(c, max_chars=max_chars_per_chunk)
         body = f"【讲解】\n{c.text[:max_chars_per_chunk]}"
         screen = "\n".join(frame_caption.chunk_screen_lines(c, with_ts=True))
         if screen:
@@ -309,24 +379,47 @@ def build_outline(
         groups: list[dict[str, Any]] = []
         for grp in item.get("groups") or []:
             gtitle = str(grp.get("title") or "").strip()
-            items = [
-                _fix(x) for x in (grp.get("items") or []) if str(x).strip()
+            # 要点开头的 [MM:SS] 是模型从音画锚点抄来的真实画面时刻，
+            # 剥掉存进 items_ts，items 保持纯文本，别影响导图和内容结构。
+            pairs = [
+                anchors_mod.split_item_ts(str(x)) for x in (grp.get("items") or [])
+                if str(x).strip()
             ]
+            items: list[str] = []
+            item_ts: list[float] = []
+            for ts, text in pairs:
+                if not text:
+                    continue
+                items.append(_fix(text))
+                item_ts.append(snap_anchor_ts(ts, chunks) if ts else 0.0)
             if not items:
                 continue
+            # 模型整组都漏写时间码：从逐块要点继承，别整段退回「猜 cover_ts」
+            if not any(t > 0 for t in item_ts):
+                item_ts = _infer_item_times(items, chunks)
+            cover = parse_cover_ts(grp.get("cover_ts"), meta.duration)
+            fallback = snap_anchor_ts(cover, chunks) if cover else 0.0
             groups.append({
                 "title": gtitle,
                 "items": items,
-                # 二级小段的配图时间点，空字符串表示"这一段没什么可截的"
-                "cover_ts": parse_cover_ts(grp.get("cover_ts"), meta.duration),
+                "items_ts": item_ts,
+                # 配图优先用第一条要点的真实时刻，模型猜的 cover_ts 只作兜底
+                "ts": next((t for t in item_ts if t > 0), fallback),
+                "cover_ts": cover,
             })
         if not groups:
             continue
+        topic_cover = parse_cover_ts(item.get("cover_ts"), meta.duration)
+        # 一级主题的代表画面：模型挑的「信息量最足」那一刻，吸附到真实帧。
+        # 不能顺手拿第一个二级主题的 ts——那样两张图会是同一帧，白占位置。
+        topic_ts = snap_anchor_ts(topic_cover, chunks) if topic_cover else 0.0
+        if topic_ts <= 0:
+            topic_ts = next((g["ts"] for g in groups if g["ts"] > 0), 0.0)
         outline.append({
             "title": title,
             "summary": _fix(item.get("summary")),
-            # 主题配图的时间点：解析失败/超出时长会是 0，渲染层会自动找替代帧
-            "cover_ts": parse_cover_ts(item.get("cover_ts"), meta.duration),
+            "ts": topic_ts,
+            "cover_ts": topic_cover,
             "groups": groups,
         })
 
@@ -382,15 +475,21 @@ def summarize_chunks(
     def work(chunk: Chunk) -> None:
         if cancel and cancel():
             raise CancelledError("任务已取消")
-        # 优先用提炼过的画面要点（干净、带结构）；没提炼过才退回 OCR 原文
-        screen = "\n".join(frame_caption.chunk_screen_lines(chunk))
-        ocr = screen[:800] if screen else (chunk.ocr_text or "（无画面文字）")[:800]
+        # 音画锚定材料：按时间排好的「这一帧画面 + 这段时间博主说的话」。
+        # 旧任务缓存 / 抽帧失败时 anchors 为空，退回原来「讲解 + 画面文字」两坨文本。
+        if chunk.anchors:
+            material = anchors_mod.anchor_material(chunk, max_chars=2800)
+        else:
+            screen = "\n".join(frame_caption.chunk_screen_lines(chunk, with_ts=True))
+            material = (
+                f"【讲解】\n{chunk.text[:2400]}\n\n"
+                f"【画面】\n{(screen or chunk.ocr_text or '（无画面文字）')[:800]}"
+            )
         prompt = _CHUNK_TMPL.format(
             title=meta.title,
             start=fmt_ts(chunk.start),
             end=fmt_ts(chunk.end),
-            text=chunk.text[:2400],
-            ocr=ocr,
+            material=material,
         )
         detailed = note_detail == "detailed"
         data = client.complete_json(
@@ -402,6 +501,21 @@ def summarize_chunks(
         chunk.bullets = [
             _fix(b) for b in (data.get("bullets") or []) if str(b).strip()
         ][:10 if detailed else 6]
+        # 每条要点讲的是哪一帧：模型照抄材料里的时间码，就近吸附到真实帧，
+        # 长度对不上时用块内锚点顺序兜底，别让位置信息整块丢掉。
+        raw_ts = list(data.get("bullet_ts") or [])
+        times = [
+            snap_anchor_ts(anchors_mod.parse_ts(t), chunks)
+            for t in raw_ts[:len(chunk.bullets)]
+        ]
+        while len(times) < len(chunk.bullets):
+            idx = len(times)
+            fallback = (
+                chunk.anchors[min(idx, len(chunk.anchors) - 1)].frame_ts
+                if chunk.anchors else 0.0
+            )
+            times.append(fallback)
+        chunk.bullet_ts = times
         chunk.keywords = [str(k).strip() for k in (data.get("keywords") or []) if str(k).strip()][:5]
         if not chunk.summary:
             _fallback_chunk(chunk)
@@ -584,6 +698,9 @@ def _fallback_chunk(chunk: Chunk) -> None:
     chunk.summary = chunk.summary or (text[:200] + ("…" if len(text) > 200 else ""))
     if not chunk.bullets:
         chunk.bullets = sentences[:4]
+    # 降级重造要点后，旧的时间码已经对不上了，宁可不带也别张冠李戴
+    if len(chunk.bullet_ts) != len(chunk.bullets):
+        chunk.bullet_ts = []
 
 
 def _fallback_chapters(chunks: list[Chunk], size: int = 5) -> list[Chapter]:

@@ -75,12 +75,67 @@ class VideoMeta:
 
 
 @dataclass
+class SceneSpan:
+    """一段「画面停住没变」的时间区间。
+
+    博主暂停讲解时画面往往停在某一页 PPT / 某一句双语字幕上，
+    这段时间内说的所有话讲的都是这一帧。抽帧只能给出末帧时间点，
+    但「哪句讲解属于哪张画面」要靠区间才能算出来。
+    """
+
+    start: float
+    end: float
+    rep_ts: float          # 区间末帧：内容放全的那一刻
+    stable: bool = True    # 是否达到「静止 N 秒」的稳定段
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start, "end": self.end,
+            "rep_ts": self.rep_ts, "stable": self.stable,
+        }
+
+
+@dataclass
+class Anchor:
+    """一个「画面 + 同期讲解」的音画对。
+
+    笔记里每条要点都要能回答「它讲的是哪一帧」，靠的就是这个：
+    frame_ts 是那张画面的时间点，speech 是这段时间博主说的话，
+    screen 是画面上本来就有的文字（例句 / PPT / 板书）。
+    """
+
+    start: float
+    end: float
+    frame_ts: float = 0.0
+    frame_path: str = ""
+    speech: str = ""
+    screen: str = ""
+    span_start: float = 0.0
+    span_end: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "frame_ts": self.frame_ts,
+            "frame_path": self.frame_path,
+            "speech": self.speech,
+            "screen": self.screen,
+            "span_start": self.span_start,
+            "span_end": self.span_end,
+        }
+
+
+@dataclass
 class Frame:
     """一张候选/关键帧。"""
 
     ts: float
     path: str
     origin: str = "scene"  # scene | uniform | cue
+    # 所属画面稳定段的区间；抽帧阶段填好，音画锚定阶段用
+    seg_start: float = 0.0
+    seg_end: float = 0.0
     sharpness: float = 0.0
     ocr_text: str = ""
     ocr_blocks: list[dict[str, Any]] = field(default_factory=list)
@@ -100,6 +155,8 @@ class Frame:
             "ts": self.ts,
             "path": self.path,
             "origin": self.origin,
+            "seg_start": round(self.seg_start, 2),
+            "seg_end": round(self.seg_end, 2),
             "sharpness": round(self.sharpness, 4),
             "ocr_text": self.ocr_text,
             "text_density": round(self.text_density, 4),
@@ -127,6 +184,10 @@ class Chunk:
     ocr_text: str = ""
     summary: str = ""
     bullets: list[str] = field(default_factory=list)
+    # 与 bullets 一一对应：每条要点讲的是哪一刻（画面时间点）
+    bullet_ts: list[float] = field(default_factory=list)
+    # 块内按画面段切好的「画面 + 同期讲解」音画对
+    anchors: list[Anchor] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     title: str = ""
 

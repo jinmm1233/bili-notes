@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 
@@ -40,9 +41,28 @@ def build_chunks(
     target: int = 800,
     max_chars: int = 1200,
     min_chars: int = 120,
+    scene_bounds: list[float] | None = None,
 ) -> list[Chunk]:
+    """按语义切块；接近目标长度时优先在画面切换处断开。
+
+    scene_bounds 是画面停留段的结束时间。只把切点往这些边界上靠，
+    不改变三档共用的判定标准，也不额外增加块数（门槛是 target 的八成）。
+    """
     if not segments:
         return []
+
+    bounds = sorted(scene_bounds or [])
+
+    def crosses_scene_bound(last_end: float, seg: Segment) -> bool:
+        """上一句到这一句之间是否换过画面。
+
+        ASR 一句常只有两三秒，很少「恰好」跨在切换那一秒上；所以看的是
+        两句之间的间隙里有没有边界，而不是单句自身跨没跨。
+        """
+        if not bounds:
+            return False
+        i = bisect.bisect_left(bounds, last_end)
+        return i < len(bounds) and bounds[i] <= seg.end
 
     chunks: list[Chunk] = []
     buf: list[Segment] = []
@@ -68,7 +88,8 @@ def build_chunks(
         buf, buf_len = [], 0
 
     for seg in segments:
-        gap = seg.start - prev_end
+        last_end = prev_end
+        gap = seg.start - last_end
         buf.append(seg)
         buf_len += len(seg.text)
         prev_end = seg.end
@@ -77,6 +98,9 @@ def build_chunks(
             flush()
             continue
         if buf_len >= target and _cut_score(seg, gap, buf_len, target) >= 4.0:
+            flush()
+            continue
+        if buf_len >= target * 0.8 and crosses_scene_bound(last_end, seg):
             flush()
 
     flush()

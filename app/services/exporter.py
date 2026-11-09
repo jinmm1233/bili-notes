@@ -215,7 +215,7 @@ def _render_structure(note: VideoNote) -> list[str]:
             points += [str(x).strip() for x in (group.get("items") or []) if str(x).strip()]
         sections.append((
             str(sec.get("title") or "").strip(),
-            float(sec.get("cover_ts") or 0),
+            float(sec.get("ts") or sec.get("cover_ts") or 0),
             points,
         ))
     if not sections:
@@ -291,8 +291,13 @@ def _frames_of(note: VideoNote) -> list[Frame]:
     return out
 
 
-def _nearest_frame(frames: list[Frame], ts: float, tol: float = 75.0) -> Frame | None:
-    """找时间上最接近 ts 的一帧；差得太多就不要（宁可没图，也不给错图）。"""
+def _nearest_frame(frames: list[Frame], ts: float, tol: float = 8.0) -> Frame | None:
+    """找时间上最接近 ts 的一帧；差得太多就不要（宁可没图，也不给错图）。
+
+    以前容差是 75 秒：模型猜的 cover_ts 偏一会儿，配图就落到别的知识点上
+    （TED 讲解里 00:02 讲的 this is a true story 配了 00:36 的单词卡）。
+    现在时间码来自音画锚定的真实帧，±8 秒足够覆盖抽帧间隔，再远就是错图。
+    """
     best: Frame | None = None
     best_gap = tol
     for frame in frames:
@@ -330,32 +335,63 @@ def _section_shot(
     note: VideoNote,
     node: dict[str, Any],
     image_map: dict[int, str],
-    used: set[int],
     fallback_order: int | None = None,
 ) -> tuple[Frame, str] | None:
     """给一段总结配一张对应画面。
 
-    时间点来自模型的 cover_ts（它看得见材料里的时间标记，挑的是画面信息最足的那一刻）。
-    - 一级主题：模型没给或给得不靠谱时，按"主题顺序 ≈ 时间顺序"均分时间轴兜底，
-      保证开头每个大段都有图；
-    - 二级小段：模型给空字符串就表示"这段没什么可截的"，直接不配图。
-    已经用过的帧不会再用——同一张图在总结里出现两次只会让人困惑。
+    时间不再让模型猜：优先用 node["ts"] —— 那是要点从音画锚点抄来、并已吸附到
+    真实帧的时刻；旧笔记没有这个字段时才退回模型给的 cover_ts（容差同样收紧）。
+    - 一级主题：连 cover_ts 都没有时，按「主题顺序 ≈ 时间顺序」均分时间轴兜底；
+    - 二级小段：什么时间都没有就不配图。
+
+    这里不再维护「一张图全篇只能用一次」的全局集合：同一页 PPT 讲两个知识点，
+    本来就该在两个地方各出现一次，读者才对得上。连续重复由渲染层去重。
     """
-    frames = [f for f in _frames_of(note) if image_map.get(id(f)) and id(f) not in used]
+    frames = [f for f in _frames_of(note) if image_map.get(id(f))]
     if not frames:
         return None
-    ts = float(node.get("cover_ts") or 0)
-    if ts <= 0:
-        if fallback_order is None:
-            return None
-        total = len(note.outline) or 1
-        span = note.meta.duration or max(f.ts for f in frames)
-        ts = span * (fallback_order + 0.5) / total
-    frame = _nearest_frame(frames, ts)
+    ts = float(node.get("ts") or 0)
+    if ts > 0:
+        # ts 是真实帧时刻，先按 2 秒找；高清替换/抽帧误差再放宽到 8 秒
+        frame = _nearest_frame(frames, ts, tol=2.0) or _nearest_frame(frames, ts, tol=8.0)
+    else:
+        cover = float(node.get("cover_ts") or 0)
+        if cover <= 0:
+            if fallback_order is None:
+                return None
+            total = len(note.outline) or 1
+            span = note.meta.duration or max(f.ts for f in frames)
+            cover = span * (fallback_order + 0.5) / total
+        frame = _nearest_frame(frames, cover, tol=8.0)
     if frame is None:
         return None
-    used.add(id(frame))
     return frame, image_map[id(frame)]
+
+
+def _item_line(note: VideoNote, text: str, ts: float) -> str:
+    """一条要点 + 它讲的那帧画面时间码（可跳回原片）。"""
+    if ts <= 0:
+        return f"- {text}"
+    stamp = fmt_ts(ts)
+    url = note.meta.webpage_url or ""
+    if url:
+        return f"- {text}　<sub>[`{stamp}`]({ts_link(url, ts)})</sub>"
+    return f"- {text}　<sub>`{stamp}`</sub>"
+
+
+def _group_items_by_ts(
+    items: list[str], times: list[float], join_gap: float = 8.0,
+) -> list[tuple[float, list[str]]]:
+    """把要点按「讲的是哪一帧」分组，相邻同一画面的合在一起配一张图。"""
+    groups: list[tuple[float, list[str]]] = []
+    for text, ts in zip(items, times):
+        if groups and ts > 0 and abs(ts - groups[-1][0]) <= join_gap:
+            groups[-1][1].append(text)
+        elif groups and ts <= 0:
+            groups[-1][1].append(text)
+        else:
+            groups.append((ts, [text]))
+    return groups
 
 
 def _screen_block(frame: Frame) -> list[str]:
@@ -409,7 +445,16 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
     每段总结下面配一张对应画面：文字给结论，画面给证据。
     """
     lines: list[str] = ["## 笔记", ""]
-    used: set[int] = set()
+    last_path = ""   # 只去掉紧挨着的重复图，不再限制一张图全篇出现一次
+
+    def shot(node: dict[str, Any], order: int | None = None):
+        nonlocal last_path
+        result = _section_shot(note, node, image_map, order)
+        if result and result[0].path == last_path:
+            return None
+        if result:
+            last_path = result[0].path
+        return result
 
     for i, topic in enumerate(note.outline):
         mark = _CN_NUM[i] if i < len(_CN_NUM) else str(i + 1)
@@ -421,21 +466,34 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
             lines.append(f"> {summary}")
             lines.append("")
 
-        lines.extend(_render_shot(
-            note, _section_shot(note, topic, image_map, used, i), with_caption=True
-        ))
+        lines.extend(_render_shot(note, shot(topic, i), with_caption=True))
 
         for group in topic.get("groups") or []:
             gtitle = group.get("title") or ""
             if gtitle:
                 lines.append(f"#### {gtitle}")
                 lines.append("")
-            lines.extend(_render_shot(
-                note, _section_shot(note, group, image_map, used), with_caption=True
-            ))
-            for item in group.get("items") or []:
-                lines.append(f"- {item}")
-            lines.append("")
+
+            items = [str(x) for x in (group.get("items") or [])]
+            times = [float(t or 0) for t in (group.get("items_ts") or [])]
+            anchored = len(times) == len(items) and any(t > 0 for t in times)
+
+            if anchored:
+                # 每条要点带着它讲的真实画面时刻：同一帧的要点合一组、配一张图，
+                # 换到下一帧就换图。这样「定语后置」配的是它讲的那张卡。
+                for ts, texts in _group_items_by_ts(items, times):
+                    lines.extend(_render_shot(
+                        note, shot({"ts": ts}), with_caption=False
+                    ))
+                    for text in texts:
+                        lines.append(_item_line(note, text, ts))
+                    lines.append("")
+            else:
+                # 旧笔记 / 模型没抄时间码：保留原来的「二级主题一张封面图」
+                lines.extend(_render_shot(note, shot(group), with_caption=True))
+                for item in items:
+                    lines.append(f"- {item}")
+                lines.append("")
 
     if note.takeaways:
         lines.append("## 结论")
@@ -532,13 +590,21 @@ def _render_chapter(
 
     bullets: list[str] = []
     if with_bullets:
+        seen_bullets: set[str] = set()
         for idx in chapter.chunk_indexes:
-            for b in note.chunks[idx].bullets:
-                if b not in bullets:
-                    bullets.append(b)
+            chunk = note.chunks[idx]
+            times = (
+                chunk.bullet_ts
+                if len(chunk.bullet_ts) == len(chunk.bullets) else []
+            )
+            for j, b in enumerate(chunk.bullets):
+                if b in seen_bullets:
+                    continue
+                seen_bullets.add(b)
+                bullets.append(_item_line(note, b, times[j] if times else 0.0))
         if bullets:
             for b in bullets[:8]:
-                lines.append(f"- {b}")
+                lines.append(b)
             lines.append("")
 
     for idx in chapter.chunk_indexes:

@@ -18,8 +18,9 @@ from typing import Callable
 from ..core.config import Settings
 from ..core.errors import AppError, CancelledError
 from ..core.llm import PROVIDERS, LLMClient
-from ..core.models import Chunk, Frame, Segment, VideoNote
+from ..core.models import Chunk, Frame, SceneSpan, Segment, VideoNote
 from ..core.secretstore import SecretStore
+from . import anchors as anchors_mod
 from . import bili_auth, chunking, concept_review, downloader, exporter, itinerary, lecture, mindmap, ocr, subtitle, summarize, text_check, transcribe, wordbook, words
 from . import frames as frames_mod
 
@@ -71,6 +72,8 @@ class Pipeline:
         self._sub: dict[str, float] = {"text": 0.0, "vision": 0.0}
         self._weights: dict[str, float] = {"text": 45.0, "vision": 30.0}
         self._sub_lock = threading.Lock()
+        # 全片画面停留区间，抽帧阶段填好，音画锚定/切块都要用
+        self._scene_spans: list[SceneSpan] = []
 
     def _emit(self, stage: str, pct: float, msg: str) -> None:
         log.info("[%s %.0f%%] %s", stage, pct, msg)
@@ -96,6 +99,7 @@ class Pipeline:
         work = self.settings.cache_dir / task_id
         work.mkdir(parents=True, exist_ok=True)
         started = time.time()
+        self._scene_spans = []
 
         # 1. 元数据
         self._emit("probe", 2, "解析视频信息…")
@@ -129,6 +133,8 @@ class Pipeline:
             segments,
             target=self.settings.chunk_target_chars,
             max_chars=self.settings.chunk_max_chars,
+            scene_bounds=anchors_mod.bounds_from_spans(self._scene_spans)
+            or anchors_mod.scene_bounds(sampled),
         )
         if not chunks and sampled:
             # 没有语音（无音轨 / 只有配乐 / 人声太轻）时转写会是 0 句。
@@ -197,6 +203,8 @@ class Pipeline:
         # 6.1 画面要点：先于总结提炼——逐块总结和结构化大纲都要吃这份材料，
         #     PPT 的题目/分点才能长进笔记结构里
         self._screen_notes(chunks, client)
+        # 画面要点比 OCR 碎片干净，回填到音画锚点里再喂给总结/大纲
+        anchors_mod.refresh_screens(chunks)
 
         self._check_cancel()
         self._emit("summary", 87, "逐块总结中…")
@@ -571,7 +579,8 @@ class Pipeline:
 
             self._emit_sub("vision", 32, "检测画面切换…")
             candidates = frames_mod.generate_candidates(
-                self.settings, video, meta.duration, work / "frames"
+                self.settings, video, meta.duration, work / "frames",
+                spans_out=self._scene_spans,
             )
             # 阶段一只是「撒网」：候选全部留下，交给后面的打分按档位筛。
             # 别在这里按 max_frames_total 截断——三档的 total 都是 0（不限），
@@ -638,7 +647,16 @@ class Pipeline:
                 pooled.extend(fresh)
                 self._emit("frames", 82, f"补充讲解峰值画面 {len(fresh)} 张")
 
-            selected = frames_mod.score_and_select(self.settings, pooled, chunks)
+            # 音画锚定：算出「每句讲解讲的是哪一帧」，让总结/大纲/配图
+            # 都拿到带真实时间码的成对材料，而不是两坨没有时间的正文。
+            anchors_mod.build_anchors(
+                chunks, segments, pooled, meta.duration,
+                spans=self._scene_spans,
+            )
+            must_keep = anchors_mod.must_keep_paths(chunks)
+            selected = frames_mod.score_and_select(
+                self.settings, pooled, chunks, must_keep=must_keep
+            )
 
             # 低清候选只负责定位，进笔记的这几十张换成原画质
             if selected and self.settings.hd_frames:
@@ -679,6 +697,8 @@ def _chunk_dict(chunk: Chunk) -> dict:
         "bullets": chunk.bullets,
         "keywords": chunk.keywords,
         "ocr_text": chunk.ocr_text,
+        "bullet_ts": chunk.bullet_ts,
+        "anchors": [a.to_dict() for a in chunk.anchors],
         "frames": [f.to_dict() for f in chunk.frames],
         "chars": chunk.char_count,
     }
