@@ -47,7 +47,8 @@ def test_version() -> None:
     ok(U.parse_version("0.3") == (0, 3, 0), "两段版本号补 0")
     ok(U.parse_version("0.2.1-beta2") == (0, 2, 1), "带后缀版本号")
     ok(U.parse_version("不是版本号") == (0, 0, 0), "无法识别不误判为新版")
-    ok(U.is_newer("v0.2.1"), "新版本识别")
+    # 别写死版本号：软件升到 0.2.2 后，0.2.1 就不再是"新版"了
+    ok(U.is_newer("v0.2.1", "0.2.0"), "新版本识别（相对旧版）")
     ok(not U.is_newer("0.2.0"), "同版本不算更新")
     ok(not U.is_newer("0.1.9", "0.2.0"), "旧版本不算更新")
     ok(U.normalize_tag("V1.4.0") == "1.4.0", "tag 去 v 前缀")

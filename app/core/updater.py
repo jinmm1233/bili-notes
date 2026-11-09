@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -155,8 +156,21 @@ def parse_release(payload: dict, repo: str) -> dict:
     """把 GitHub 的 release JSON 收成前端要的那一小撮字段。"""
     tag = normalize_tag(str(payload.get("tag_name") or ""))
     assets = [a for a in (payload.get("assets") or []) if isinstance(a, dict)]
-    exe = next((a for a in assets
-                if str(a.get("name") or "").lower().endswith(".exe")), None)
+    exes = [a for a in assets
+            if str(a.get("name") or "").lower().endswith(".exe")]
+
+    def _exe_rank(a: dict) -> tuple[int, str]:
+        name = str(a.get("name") or "").lower()
+        # Release 里可能同时挂着 vc_redist 这类运行库，别把它当主安装包
+        if "bili" in name and "setup" in name:
+            return 0, name
+        if "setup" in name:
+            return 1, name
+        if "bili" in name:
+            return 2, name
+        return 3, name
+
+    exe = min(exes, key=_exe_rank) if exes else None
     sum_asset = next((a for a in assets
                       if re.search(r"(sha256|\.sums?$|checksums)",
                                   str(a.get("name") or ""), re.I)), None)
@@ -207,7 +221,18 @@ def check(force: bool = False) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             payload = json.loads(resp.read().decode("utf-8", "replace"))
-    except Exception as exc:                       # 超时 / DNS / 403 / 404 全都不吓人
+    except urllib.error.HTTPError as exc:
+        # 填错仓库名 / 还没发 Release 是最常见的两种，给能动手改的提示
+        log.info("检查更新返回 %s（不阻断使用）：%s", exc.code, repo)
+        if exc.code == 404:
+            return {"ok": False, "reason": "not_found",
+                    "message": f"没找到 {repo} 的正式 Release：检查用户名/仓库名，或先发布一个 Release"}
+        if exc.code in (403, 429):
+            return {"ok": False, "reason": "rate_limited",
+                    "message": "GitHub 接口暂时限流了，稍后再试；不影响使用"}
+        return {"ok": False, "reason": "network",
+                "message": f"GitHub 返回 {exc.code}，不影响使用，稍后再试"}
+    except Exception as exc:                       # 超时 / DNS 全都不吓人
         log.info("检查更新失败（不阻断使用）：%s", exc)
         return {"ok": False, "reason": "network",
                 "message": f"暂时连不上 GitHub（{type(exc).__name__}）——不影响使用，稍后再试"}
@@ -269,11 +294,16 @@ def _updates_dir() -> Path:
     return get_settings().data_dir / "updates"
 
 
-def _cleanup_old(keep: Path) -> None:
-    """只留当前这一个安装包，别让 updates/ 越攒越大（卸载器不碰这个目录）。"""
+def _cleanup_old(keep: Path, keep_part: Path) -> None:
+    """只留当前这一个安装包，别让 updates/ 越攒越大（卸载器不碰这个目录）。
+
+    keep_part 是当前资产的半截下载：断点续传还要接着写，不能当垃圾清掉。
+    """
     folder = _updates_dir()
     for p in folder.glob("*"):
-        if p != keep and p.is_file() and p.suffix.lower() in (".exe", ".part", ".tmp"):
+        if p in (keep, keep_part):
+            continue
+        if p.is_file() and p.suffix.lower() in (".exe", ".part", ".tmp"):
             try:
                 p.unlink()
             except OSError:
@@ -301,6 +331,31 @@ def start_download() -> dict:
     return {"ok": True, "started": True}
 
 
+def _sha_from_sums(url: str, name: str, cfg: dict) -> str:
+    """Release 说明里没贴哈希时，去 SHA256SUMS.txt 里找对应文件的那一行。"""
+    if not url or not _url_allowed(url, cfg):
+        return ""
+    try:
+        req = urllib.request.Request(_with_mirror(url, cfg), headers={
+            "User-Agent": f"BiliNotes/{__version__}",
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            text = resp.read(256 * 1024).decode("utf-8", "replace")
+    except Exception as exc:                       # 校验文件拿不到也不能挡住更新
+        log.info("读取校验文件失败（跳过校验）：%s", exc)
+        return ""
+    target = name.lower()
+    for line in text.splitlines():
+        m = re.match(r"^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$", line)
+        if not m:
+            continue
+        filename = m.group(2).strip().lstrip("*").replace("\\", "/").split("/")[-1]
+        if filename.lower() == target:
+            return m.group(1).lower()
+    log.info("校验文件里没有 %s 的记录", name)
+    return ""
+
+
 def _download_worker(url: str, asset: dict, cfg: dict) -> None:
     folder = _updates_dir()
     name = str(asset.get("name") or "BiliNotes-setup.exe")
@@ -308,26 +363,51 @@ def _download_worker(url: str, asset: dict, cfg: dict) -> None:
     part = folder / (name + ".part")
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        _cleanup_old(final)
-        req = urllib.request.Request(_with_mirror(url, cfg), headers={
-            "User-Agent": f"BiliNotes/{__version__}",
-        })
-        with urllib.request.urlopen(req, timeout=30) as resp, part.open("wb") as f:
-            total = int(resp.headers.get("Content-Length") or asset.get("size") or 0)
-            received, digest = 0, hashlib.sha256()
-            while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                digest.update(chunk)
-                received += len(chunk)
-                with _LOCK:
-                    _DOWNLOAD.update({
-                        "received": received, "total": total,
-                        "progress": min(99, int(received * 100 / total)) if total else 0,
-                    })
+        _cleanup_old(final, part)
+
+        # 校验值两个来源：Release 说明里的 64 位哈希 > SHA256SUMS.txt。
+        # 以前只认前者，后者虽解析出 sum_url 却从没读过，等于没校验。
         expected = str(asset.get("sha256") or "").lower()
+        if not expected:
+            expected = _sha_from_sums(str(asset.get("sum_url") or ""), name, cfg)
+
+        total = int(asset.get("size") or 0)
+        resume = part.stat().st_size if part.is_file() else 0
+        if total and resume >= total:              # 残留的坏文件，重头下
+            resume = 0
+            part.unlink(missing_ok=True)
+        headers = {"User-Agent": f"BiliNotes/{__version__}"}
+        if resume:
+            headers["Range"] = f"bytes={resume}-"
+        req = urllib.request.Request(_with_mirror(url, cfg), headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            content_range = str(resp.headers.get("Content-Range") or "")
+            appending = status == 206 and content_range.startswith(f"bytes {resume}-")
+            if not appending:
+                # 服务端忽略了 Range：必须从头写，否则两份内容会拼在一起
+                resume = 0
+                part.unlink(missing_ok=True)
+            length = int(resp.headers.get("Content-Length") or 0)
+            total = total or (resume + length if appending else length)
+            with part.open("ab" if appending else "wb") as f:
+                received = resume
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+                    with _LOCK:
+                        _DOWNLOAD.update({
+                            "received": received, "total": total,
+                            "progress": min(99, int(received * 100 / total)) if total else 0,
+                        })
+        # 续传时不能只算新增字节：整个文件重读一遍算哈希，代价远小于重下 210MB
+        digest = hashlib.sha256()
+        with part.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
         verified = bool(expected) and digest.hexdigest().lower() == expected
         if expected and not verified:
             part.unlink(missing_ok=True)
@@ -344,7 +424,8 @@ def _download_worker(url: str, asset: dict, cfg: dict) -> None:
         saved["download_cache"] = {"path": str(final), "name": name,
                                    "verified": verified}
         _write_json(_state_file(), saved)
-        log.info("更新包下载完成：%s", final)
+        log.info("更新包下载完成：%s（SHA256 校验=%s）", final,
+                 "通过" if verified else "未提供校验值")
     except Exception as exc:
         log.warning("下载更新包失败：%s", exc)
         try:
@@ -369,7 +450,7 @@ def install() -> dict:
         return {"ok": False, "message": f"启动安装程序失败：{exc}"}
 
     def _leave() -> None:
-        # 先关掉 Edge 应用窗口，run() 里 proc.wait() 返回，主进程自然结束。
+        # 先关掉 Edge 应用窗口（window.py 轮询窗口存活，不用 proc.wait()），
         # 兜底再强退一次，保证安装器不会撞上被占用的 BiliNotes.exe。
         try:
             from .. import window  # noqa: PLC0415  避免 window <-> updater 循环导入
