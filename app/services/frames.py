@@ -1,0 +1,469 @@
+"""关键帧选择：候选生成 → 四维打分 → 去重择优。
+
+打分刻意偏重"有没有信息"而非"画面好不好看"：
+一段纯人脸的讲解帧对笔记毫无价值，一张满是公式的 PPT 才是要的。
+"""
+from __future__ import annotations
+
+import logging
+import math
+from pathlib import Path
+from typing import Any
+
+import cv2
+import imagehash
+import numpy as np
+from PIL import Image
+
+from ..core.config import Settings
+from ..core.ffmpeg import extract_frames_at, extract_frames_from_url, extract_thumbnails
+from ..core.models import Chunk, Frame, Segment
+from .chunking import bigrams
+
+log = logging.getLogger(__name__)
+
+_CUE_PATTERNS = ("看这里", "这个图", "如图所示", "这张图", "看这个", "公式", "代码",
+                 "这个表", "示意图", "流程图", "架构图", "我们看", "请注意")
+
+# 稳定画面段上限。档位越高允许保留越多：
+# 详细档放宽到 400 段，避免「一节课几百次翻页」被均匀截断丢掉后面的页。
+_CUT_CAP = {"brief": 160, "standard": 240, "detailed": 400}
+
+# 判定「画面稳定下来」所需的连续静止秒数（缩略图 1fps）。
+# **三档一致**：详细不等于「一变就截」，它只是「每段多留几张」。
+# 定 2 秒而不是 3 秒：板书写完往往只停两秒就擦掉/翻页，要求 3 秒会把整页漏掉。
+# 放宽到 2 秒后，PPT 逐条动画的中间态会进候选，但打分阶段「字多的分高」，
+# 同一页的相似帧去重时最终会留下内容最全的那一张——既不漏，也不选半成品。
+_STABLE_MIN = 2
+
+# 一页 PPT 讲很久时，只在末尾截一张会漏掉后面补的板书/高亮。
+# 稳定段超过 _LONG_SEGMENT 秒，就每 _LONG_STEP 秒往回补一个点。
+# 同样三档一致——判定标准不因档位改变。
+_LONG_SEGMENT = 90.0
+_LONG_STEP = 30.0
+
+
+def detect_cuts(
+    thumbs: list[tuple[float, Path]],
+    distance: int = 14,
+    min_gap: float = 2.0,
+) -> list[float]:
+    """用感知哈希帧差找场景切换点。
+
+    判据是"整幅画面结构变了"而非"亮度变了"——所以白底 PPT 翻页、代码滚动、
+    画面切换都能命中，而镜头轻微晃动不会。
+    """
+    if len(thumbs) < 2:
+        return []
+
+    hashes: list[Any] = []
+    for _ts, path in thumbs:
+        try:
+            with Image.open(path) as img:
+                hashes.append(imagehash.phash(img.convert("RGB"), hash_size=8))
+        except Exception:
+            hashes.append(None)
+
+    cuts: list[float] = []
+    last_kept = -1e9
+    for i in range(1, len(hashes)):
+        prev, cur = hashes[i - 1], hashes[i]
+        if prev is None or cur is None:
+            continue
+        ts = thumbs[i][0]
+        if (prev - cur) >= distance and (ts - last_kept) >= min_gap:
+            cuts.append(ts)
+            last_kept = ts
+    return cuts
+
+
+def detect_stable(
+    thumbs: list[tuple[float, Path]],
+    distance: int = 12,
+    min_stable: int = 3,
+    long_segment: float = _LONG_SEGMENT,
+    long_step: float = _LONG_STEP,
+) -> list[float]:
+    """找「画面稳定段」，返回每段的**最后一帧**时间点。
+
+    为什么不再按「变化点」抽：PPT 常带逐条动画（标题 → 第一条 → 第二条…），
+    每一帧都在变。按变化点截，笔记里会塞满「字还没出全」的中间态；
+    真正有用的是全部内容放完之后那一帧。所以这里先找「连续 N 秒不再变化」
+    的区间，再取区间末尾——那一刻画面最完整。
+
+    一页讲很久（超过 long_segment）时，末尾一张不够，按 long_step 往回补点，
+    防止后半段补的板书/高亮被漏掉。
+    """
+    if len(thumbs) < 2:
+        return []
+
+    hashes: list[Any] = []
+    for _ts, path in thumbs:
+        try:
+            with Image.open(path) as img:
+                hashes.append(imagehash.phash(img.convert("RGB"), hash_size=8))
+        except Exception:
+            hashes.append(None)
+
+    points: list[float] = []
+    n = len(hashes)
+    i = 0
+    while i < n:
+        j = i
+        while (j + 1 < n and hashes[j] is not None and hashes[j + 1] is not None
+               and (hashes[j] - hashes[j + 1]) < distance):
+            j += 1
+        run = j - i + 1
+        if run >= min_stable:
+            start_ts, end_ts = thumbs[i][0], thumbs[j][0]
+            points.append(end_ts)                 # 稳定段末尾 = 内容最全的一帧
+            if long_step > 0 and (end_ts - start_ts) > long_segment:
+                t = start_ts + long_step
+                while t < end_ts - 1.0:
+                    points.append(t)
+                    t += long_step
+        i = j + 1
+
+    return sorted(set(points))
+
+
+def generate_candidates(
+    settings: Settings,
+    video_path: Path,
+    duration: float,
+    workdir: Path,
+    segments: list[Segment] | None = None,
+) -> list[Frame]:
+    """三路候选：稳定画面段 / 讲解峰值 / 均匀兜底。"""
+    frames: list[Frame] = []
+
+    # 1. 稳定画面段：等画面停下来再截，跳过 PPT 动画的中间态
+    try:
+        thumbs = extract_thumbnails(str(video_path), str(workdir / "thumbs"))
+        points = detect_stable(
+            thumbs,
+            distance=settings.scene_phash_distance,
+            min_stable=_STABLE_MIN,
+            long_segment=_LONG_SEGMENT,
+            long_step=_LONG_STEP,
+        )
+        cap = _CUT_CAP.get(settings.note_detail, 240)
+        if len(points) > cap:
+            step = len(points) / cap
+            points = [points[int(i * step)] for i in range(cap)]
+        log.info("缩略图 %d 张，检出稳定画面段 %d 个（要求静止 %d 秒）",
+                 len(thumbs), len(points), _STABLE_MIN)
+        if points:
+            for ts, path in extract_frames_at(
+                str(video_path), str(workdir / "scene"), points,
+                max_edge=settings.frame_max_edge,
+            ):
+                frames.append(Frame(ts=ts, path=str(path), origin="scene"))
+    except Exception as exc:
+        log.warning("稳定画面抽帧失败：%s", exc)
+
+    # 2. 均匀兜底：防止静态长镜头一帧都抽不到
+    step = settings.uniform_interval
+    if duration > 0 and len(frames) < max(8, int(duration / (step * 2))):
+        stamps = [float(t) for t in np.arange(step, duration - 1.0, step)]
+        try:
+            for ts, path in extract_frames_at(
+                str(video_path), str(workdir / "uniform"), stamps,
+                max_edge=settings.frame_max_edge,
+            ):
+                frames.append(Frame(ts=ts, path=str(path), origin="uniform"))
+        except Exception as exc:
+            log.warning("均匀抽帧失败：%s", exc)
+
+    # 3. 讲解峰值：说到"看这个图"时画面才是重点
+    if segments:
+        frames.extend(extract_cue_frames(settings, video_path, duration, workdir, segments))
+
+    log.info("候选帧 %d 张（scene/uniform/cue）", len(frames))
+    return _reject_blank(frames)
+
+
+def extract_cue_frames(
+    settings: Settings,
+    video_path: Path,
+    duration: float,
+    workdir: Path,
+    segments: list[Segment],
+    limit: int = 40,
+) -> list[Frame]:
+    """按"看这个图/公式/代码"这类指代词，在讲到的地方补抽几帧。
+
+    依赖字幕，所以只能在拿到文本之后跑 —— 并行阶段二会调用它。
+    """
+    cues = [
+        s.end + 2.0 for s in segments
+        if any(p in s.text for p in _CUE_PATTERNS) and s.end + 2.0 < duration
+    ][:limit]
+    if not cues:
+        return []
+
+    out: list[Frame] = []
+    try:
+        for ts, path in extract_frames_at(
+            str(video_path), str(workdir / "cue"), cues, max_edge=settings.frame_max_edge
+        ):
+            out.append(Frame(ts=ts, path=str(path), origin="cue"))
+    except Exception as exc:
+        log.warning("讲解峰值抽帧失败：%s", exc)
+    return _reject_blank(out)
+
+
+def _reject_blank(frames: list[Frame]) -> list[Frame]:
+    """丢掉纯色/黑场/严重模糊的帧，省掉后面的 OCR 开销。"""
+    kept: list[Frame] = []
+    for frame in frames:
+        try:
+            img = cv2.imread(frame.path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                continue
+            if float(img.std()) < 8.0:
+                continue
+            sharp = float(cv2.Laplacian(img, cv2.CV_64F).var())
+            if sharp < 15.0:
+                continue
+            frame.sharpness = sharp
+            kept.append(frame)
+        except Exception:
+            continue
+    return kept
+
+
+def compute_phash(frame: Frame) -> str:
+    try:
+        with Image.open(frame.path) as img:
+            return str(imagehash.phash(img.convert("RGB"), hash_size=8))
+    except Exception:
+        return ""
+
+
+def score_and_select(
+    settings: Settings,
+    frames: list[Frame],
+    chunks: list[Chunk],
+) -> list[Frame]:
+    """综合打分后贪心择优，返回最终要放进笔记的帧。"""
+    if not frames:
+        return []
+
+    chunk_of = _chunk_index_map(chunks, frames)
+    max_sharp = max((f.sharpness for f in frames), default=1.0) or 1.0
+
+    for frame in frames:
+        frame.phash = frame.phash or compute_phash(frame)
+        sharp_norm = math.log1p(frame.sharpness) / math.log1p(max_sharp)
+        text_norm = min(1.0, len(frame.ocr_text) / 120.0)
+        rel = _relevance(frame, chunks[chunk_of.get(id(frame), 0)] if chunks else None)
+
+        # 「有没有用」看画面里有没有**内容**，与画面里有没有人无关：
+        # 老师站在写满板书的黑板前，照样要截。
+        # OCR 没覆盖到的（手写、反光、小字）用版面结构分兜底：
+        # 边缘密度 + 细节方差能区分「有板书的画面」和「纯人像/风景」。
+        if frame.text_density <= 0:
+            frame.text_density = text_score(frame.path)
+        info = max(text_norm, frame.text_density)
+        if info < 0.12 and frame.origin != "cue":
+            frame.score = 0.0
+            continue
+
+        frame.score = (0.35 * text_norm + 0.20 * sharp_norm + 0.25 * rel
+                       + 0.10 + 0.15 * frame.text_density)
+
+    ordered = sorted(frames, key=lambda f: f.score, reverse=True)
+    selected: list[Frame] = []
+    per_chunk_count: dict[int, int] = {}
+
+    for frame in ordered:
+        # 0 = 不限：详细档靠这个把画面全部留下，不再被固定配额砍掉
+        if settings.max_frames_total and len(selected) >= settings.max_frames_total:
+            break
+        if frame.score < 0.08:
+            continue
+        idx = chunk_of.get(id(frame), 0)
+        if (settings.max_frames_per_chunk
+                and per_chunk_count.get(idx, 0) >= settings.max_frames_per_chunk):
+            continue
+        if any(_hamming(frame.phash, s.phash) < 8 for s in selected if frame.phash and s.phash):
+            continue
+        selected.append(frame)
+        per_chunk_count[idx] = per_chunk_count.get(idx, 0) + 1
+
+    # 新颖度回填：与最终入选集合的相似度越低越新颖
+    for frame in selected:
+        others = [s for s in selected if s is not frame and s.phash and frame.phash]
+        if others:
+            novelty = min(_hamming(frame.phash, o.phash) for o in others) / 64.0
+            frame.score = round(frame.score * 0.8 + novelty * 0.2, 4)
+
+    # 兜底一：某个知识块一张都没选到（整段都是人像/风景）时，补该块最清晰的一张。
+    # 保证「每段都有画面」，又不至于整篇全是脸——vlog 类视频就靠这个。
+    filled = {chunk_of.get(id(f), 0) for f in selected}
+    per_chunk_cap = settings.max_frames_per_chunk or 0
+    for idx in range(len(chunks)):
+        if idx in filled:
+            continue
+        pool = [f for f in frames if chunk_of.get(id(f), 0) == idx]
+        if not pool:
+            continue
+        if per_chunk_cap and sum(1 for f in selected if chunk_of.get(id(f), 0) == idx) >= per_chunk_cap:
+            continue
+        selected.append(max(pool, key=lambda f: f.sharpness))
+
+    # 兜底二：整片一张都过不了阈值（纯风景），按清晰度取前 3 张
+    if not selected and frames:
+        fallback = sorted(frames, key=lambda f: f.sharpness, reverse=True)[:3]
+        log.info("无高分帧，按清晰度兜底选取 %d 张", len(fallback))
+        selected = fallback
+
+    selected.sort(key=lambda f: f.ts)
+    log.info("入选关键帧 %d / 候选 %d", len(selected), len(frames))
+    return selected
+
+
+def text_score(path: str, max_edge: int = 400) -> float:
+    """0-1 的"这帧像不像有文字/图表"分数，用于在 OCR 前挡掉纯画面帧。
+
+    两个信号相乘：
+    - 边缘密度：文字行和表格线都会产生密集横向边缘，纯色/渐变接近 0
+    - 拉普拉斯方差：有文字的版面细节极多，人物和风景低一个数量级
+
+    实测（400px 缩略图）：
+        类型        边缘密度   拉普拉斯   得分
+        PPT 幻灯片    2.40%     3039     1.00
+        表格          1.66%     2133     1.00
+        人物画面      0.67%       54     0.03
+        渐变背景      0.00%      0.8     0.00
+
+    不用轮廓计数法：表格的横竖线在闭运算后仍是细线段，
+    按长宽比过滤会被全部丢掉（整张表只能数出 1 块）。
+    """
+    img = cv2.imread(path)
+    if img is None:
+        return 0.0
+
+    h, w = img.shape[:2]
+    if max(h, w) > max_edge:
+        scale = max_edge / max(h, w)
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    grad = cv2.Sobel(gray, cv2.CV_8U, 1, 0, ksize=3)
+    try:
+        _, binary = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    except cv2.error:
+        return 0.0
+    density = float((binary > 0).mean())
+
+    edge_term = min(1.0, density / 0.012)
+    detail_term = min(1.0, sharpness / 800.0)
+    return round(edge_term * detail_term, 3)
+
+
+def filter_text_frames(
+    frames: list[Frame],
+    min_score: float = 0.35,
+    on_progress=None,
+) -> tuple[list[Frame], int]:
+    """挑出大概率含文字或图表的帧，返回 (保留的帧, 被跳过的数量)。
+
+    跳过的帧仍留在候选池里（只是没有 OCR 文本、打分自然低），
+    不会因为过滤而彻底丢失画面。
+    """
+    if not frames:
+        return [], 0
+
+    kept: list[Frame] = []
+    total = len(frames)
+    for i, frame in enumerate(frames, 1):
+        score = text_score(frame.path)
+        # 存下来：打分阶段还要用它兜底。手写板书、反光屏 OCR 常认不出，
+        # 但版面结构（边缘密度 + 细节）能说明"这画面里有内容"，不能因为
+        # OCR 没读到就把整帧丢掉。
+        frame.text_density = score
+        if score >= min_score:
+            kept.append(frame)
+        if on_progress and total:
+            on_progress(i / total * 100.0, f"预筛画面 {i}/{total}")
+    return kept, total - len(kept)
+
+
+def upgrade_selected(
+    frames: list[Frame],
+    hi_url: str,
+    workdir: Path,
+    max_edge: int = 1920,
+) -> int:
+    """把选中的关键帧换成高清版本，返回替换张数。
+
+    候选阶段为了跑得快用的是低清；真正进笔记的这几十张必须是原画质，
+    否则 OCR 认不准 PPT 上的小字，用户看到的图也糊。
+    """
+    if not frames or not hi_url:
+        return 0
+
+    hd = extract_frames_from_url(hi_url, str(workdir / "hd"), [f.ts for f in frames], max_edge=max_edge)
+    by_ts = {round(ts, 2): path for ts, path in hd}
+
+    upgraded = 0
+    for frame in frames:
+        new_path = by_ts.get(round(frame.ts, 2))
+        if not new_path:
+            continue
+        try:
+            with Image.open(new_path) as im:
+                new_w = im.size[0]
+            with Image.open(frame.path) as im:
+                old_w = im.size[0]
+        except Exception:
+            continue
+        if new_w > old_w:
+            frame.path = str(new_path)
+            frame.ocr_text = ""      # 高清帧要重新识别
+            frame.ocr_blocks = []
+            upgraded += 1
+
+    log.info("高清重取 %d / %d 张", upgraded, len(frames))
+    return upgraded
+
+
+def _chunk_index_map(chunks: list[Chunk], frames: list[Frame]) -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    if not chunks:
+        return mapping
+    for frame in frames:
+        owner = 0
+        for i, chunk in enumerate(chunks):
+            if chunk.start <= frame.ts < chunk.end:
+                owner = i
+                break
+        else:
+            owner = min(
+                range(len(chunks)),
+                key=lambda i: min(abs(chunks[i].start - frame.ts), abs(chunks[i].end - frame.ts)),
+            )
+        mapping[id(frame)] = owner
+    return mapping
+
+
+def _relevance(frame: Frame, chunk: Chunk | None) -> float:
+    if chunk is None or not frame.ocr_text:
+        return 0.0
+    a, b = bigrams(frame.ocr_text), bigrams(chunk.text)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a)
+
+
+def _hamming(a: str, b: str) -> int:
+    if not a or not b or len(a) != len(b):
+        return 64
+    try:
+        return bin(int(a, 16) ^ int(b, 16)).count("1")
+    except ValueError:
+        return 64

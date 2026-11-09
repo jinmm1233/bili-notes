@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 真实密钥与本地数据，绝不入库
+.env
+data/
+output/
+.tmp/
+
+# 用户自己的 B站 cookie
+cookies.txt
+
+# 构建产物
+build/
+dist/
+*.manifest
+.tmp_old_dist*/
+
+# 安装包是 GitHub Release 资产，不进 git（单个就 210MB，GitHub 限 100MB）
+installer/dist/
+
+# 打包用的 ffmpeg / ffprobe 本地副本（175MB）：运行时会自动下载到用户目录，
+# 只有根目录这一份是构建副本；vendor/bin 里的工具要保留。
+/bin/
+.cache/
+*.zip
+
+# 本机临时文件与调试产物
+.tmp_*/
+.tmp_server.log
+/_c1.py
+/_d.py
+/_m.py
+/_off.py
+/app.old.ico
+/BiliNotes-pack.html
+
+# 测试产物
+tests/_sample_output.md
+tests/_*.json
+tests/_demo_caption/
+.screens/
+.tmp_test/

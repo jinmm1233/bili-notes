@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BiliNotes · B站视频知识库</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23fb7299'/%3E%3Cpath d='M7 9h10M7 13h6' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<!-- 主题要在样式生效前落定，否则深色皮肤会先闪一帧白 -->
+<script>
+(function(){
+  try{
+    var t = localStorage.getItem('bn.theme');
+    if (['aurora','minimal','tech','paper'].indexOf(t) < 0) t = 'aurora';
+    document.documentElement.setAttribute('data-theme', t);
+  }catch(e){ document.documentElement.setAttribute('data-theme','aurora'); }
+})();
+</script>
+<link rel="stylesheet" href="/static/app.css?v=20261109b">
+<!-- 数学公式（矩阵/行列式/分式）用 KaTeX 渲染，资源随包分发，离线可用 -->
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+</head>
+<body>
+<!-- 极光背景：三层柔光缓慢漂移，纯装饰 -->
+<div class="aurora" aria-hidden="true">
+  <i class="a1"></i><i class="a2"></i><i class="a3"></i>
+</div>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="14" rx="3"/><path d="M8 3l2 3M16 3l-2 3"/><path d="M9 12h6"/>
+        </svg>
+      </div>
+      <div class="brand-text">BiliNotes<small>视频知识库</small></div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+        <span>总览</span>
+      </button>
+      <button class="nav-item" data-view="collect">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>
+        <span>采集收藏</span>
+      </button>
+      <button class="nav-item" data-view="queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor" stroke="none"/></svg>
+        <span>任务队列</span><em class="badge" id="navBadge" hidden>0</em>
+      </button>
+      <button class="nav-item" data-view="library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 4.5A1.5 1.5 0 015.5 3H19a1 1 0 011 1v15a1 1 0 01-1 1H5.5A1.5 1.5 0 014 18.5z"/><path d="M8 7h8M8 11h8"/></svg>
+        <span>知识库</span>
+      </button>
+      <button class="nav-item" data-view="concepts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5-8 4.5-8-4.5z"/><path d="M4 12l8 4.5 8-4.5"/><path d="M4 16.5L12 21l8-4.5"/></svg>
+        <span>概念</span>
+      </button>
+      <button class="nav-item" data-view="quiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6a2 2 0 012 2v14l-5-3-5 3V6a2 2 0 012-2z"/><path d="M9.5 9l1.6 1.6L14.5 7"/></svg>
+        <span>自测</span>
+      </button>
+      <button class="nav-item" data-view="review">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="15" rx="2.5"/><path d="M8 3h10a2 2 0 012 2v13"/><path d="M6.5 11h6M6.5 15h4"/></svg>
+        <span>复习</span><em class="badge" id="navDueBadge" hidden>0</em>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+
+    <!-- 主题切换：点一下就换肤 -->
+    <div class="theme-bar" id="themeBar" role="group" aria-label="界面主题">
+      <span class="lab">主题</span>
+      <button class="theme-dot" data-theme-pick="aurora" title="极光 · 粉调玻璃" aria-label="极光主题"><i></i></button>
+      <button class="theme-dot" data-theme-pick="minimal" title="极简 · 黑白留白" aria-label="极简主题"><i></i></button>
+      <button class="theme-dot" data-theme-pick="tech" title="科技 · 深空霓虹" aria-label="科技主题"><i></i></button>
+      <button class="theme-dot" data-theme-pick="paper" title="纸感 · 暖米黄" aria-label="纸感主题"><i></i></button>
+    </div>
+
+    <div class="side-foot">
+      <div class="foot-row"><span class="dot" id="llmDot"></span><span id="llmText">模型未配置</span></div>
+      <div class="foot-row"><span class="dot" id="biliDot"></span><span id="biliText">B站未登录</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- 总览 -->
+    <section class="view active" id="view-dashboard">
+      <header class="page-head">
+        <div>
+          <h1>总览</h1>
+          <p class="sub">所有视频笔记都以纯 Markdown 存在本地，随时可用任何编辑器打开</p>
+        </div>
+        <button class="btn ghost small" id="btnRefreshDash">刷新</button>
+      </header>
+
+      <div class="stat-grid" id="statGrid"></div>
+
+      <div class="dash-row">
+        <div class="panel">
+          <div class="panel-title">快速处理单个视频</div>
+          <div class="url-row">
+            <input type="text" id="quickUrl" placeholder="粘贴链接，或输入 BV 号（支持 ?p=2）" autocomplete="off">
+            <button class="btn primary" id="quickStart">开始</button>
+          </div>
+          <div class="chips">
+            <label class="chip"><input type="checkbox" id="qFrames" checked><span>关键画面</span></label>
+            <label class="chip"><input type="checkbox" id="qOcr" checked><span>画面文字</span></label>
+            <label class="chip"><input type="checkbox" id="qSummary" checked><span>AI 总结</span></label>
+            <label class="chip"><input type="checkbox" id="qLecture"><span>知识点讲义</span></label>
+          </div>
+          <p class="hint">画面文字识别是 BiliNotes 的差异点：PPT、代码、公式都能进笔记</p>
+        </div>
+
+        <div class="panel grow">
+          <div class="panel-title">最近任务</div>
+          <div class="mini-list" id="recentTasks"><p class="empty">暂无任务</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">最近笔记</div>
+        <div class="note-grid" id="recentNotes"><p class="empty">还没有笔记，去采集收藏夹或处理一个视频试试</p></div>
+      </div>
+    </section>
+
+    <!-- 采集 -->
+    <section class="view" id="view-collect">
+      <header class="page-head">
+        <div>
+          <h1>采集收藏</h1>
+          <p class="sub">扫码登录 B站，把整个收藏夹批量转成图文笔记</p>
+        </div>
+        <button class="btn ghost small" id="btnReloadFav" hidden>刷新收藏夹</button>
+      </header>
+
+      <div class="panel" id="authPanel">
+        <div class="panel-title">账号</div>
+        <div id="authLoggedOut">
+          <p class="hint">登录后可以读取你的收藏夹，并使用 B站 AI 字幕（比语音转写更快更准）。登录态仅保存在本机。</p>
+          <div class="qr-wrap">
+            <div class="qr-box" id="qrBox">
+              <div class="qr-placeholder">点击下方按钮生成二维码</div>
+            </div>
+            <div class="qr-side">
+              <button class="btn primary" id="btnQr">获取登录二维码</button>
+              <p class="qr-status" id="qrStatus">用 B站手机客户端扫码</p>
+              <p class="hint">二维码约 3 分钟内有效。登录成功后 cookie 会写入本机，用于后续拉取字幕。</p>
+            </div>
+          </div>
+        </div>
+        <div id="authLoggedIn" hidden>
+          <div class="user-row">
+            <img class="avatar" id="userFace" alt="">
+            <div class="user-meta">
+              <strong id="userName">—</strong>
+              <span class="muted" id="userMid"></span>
+            </div>
+            <button class="btn ghost small" id="btnLogout">退出登录</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="favPanel" hidden>
+        <div class="panel-title">收藏夹</div>
+        <div class="fav-bar">
+          <select id="favSelect"></select>
+          <div class="fav-actions">
+            <button class="btn ghost small" id="btnSelectAll">全选本页</button>
+            <button class="btn ghost small" id="btnSelectNone">清空</button>
+            <button class="btn primary" id="btnImport">导入选中（<span id="selCount">0</span>）</button>
+          </div>
+        </div>
+        <div class="batch-bar">
+          <span class="batch-label">快速处理</span>
+          <input type="number" id="batchLimit" value="20" min="1" max="100">
+          <span class="batch-unit">条</span>
+          <button class="btn primary small" id="btnBatch">从最新开始</button>
+          <label class="chip" style="margin:0" title="勾选后，收藏里属于合集/分P的视频会按系列展开处理">
+            <input type="checkbox" id="batchExpand">
+            <span>展开合集/分P</span>
+          </label>
+          <label class="chip series-limit" style="margin:0" title="每个合集最多处理几集；0 表示全部。已经生成过笔记的集会自动跳过，所以选 5 会补 5 集新的">
+            <span>每合集</span>
+            <input type="number" id="batchSeriesLimit" value="5" min="0" max="200" disabled>
+            <span>集</span>
+          </label>
+          <label class="chip" style="margin:0" title="每篇笔记额外生成一份知识点讲义（多一次大模型调用）">
+            <input type="checkbox" id="batchLecture">
+            <span>知识点讲义</span>
+          </label>
+          <span class="hint" id="batchHint" style="margin:0">按收藏时间倒序，自动跳过已产出笔记的</span>
+        </div>
+        <div class="video-grid" id="videoGrid"></div>
+        <div class="pager">
+          <button class="btn ghost small" id="btnPrev">上一页</button>
+          <span id="pageInfo" class="muted">第 1 页</span>
+          <button class="btn ghost small" id="btnNext">下一页</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 任务队列 -->
+    <section class="view" id="view-queue">
+      <header class="page-head">
+        <div>
+          <h1>任务队列</h1>
+          <p class="sub">同时最多处理 2 个，其余排队等待</p>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn ghost small" id="btnPauseAll" hidden>全部暂停</button>
+          <button class="btn ghost small" id="btnResumeAll" hidden>全部继续</button>
+          <button class="btn ghost small" id="btnRefreshTasks">刷新</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="url-row">
+          <input type="text" id="queueUrl" placeholder="再添加一个链接…" autocomplete="off">
+          <button class="btn primary" id="queueAdd">添加</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="task-list" id="taskList"><p class="empty">暂无任务</p></div>
+      </div>
+    </section>
+
+    <!-- 知识库 -->
+    <section class="view" id="view-library">
+      <header class="page-head">
+        <div>
+          <h1>知识库</h1>
+          <p class="sub" id="libSub">—</p>
+        </div>
+        <div class="kb-tools">
+          <input type="text" id="kbSearch" placeholder="搜索标题或正文…" autocomplete="off">
+          <button class="btn primary small" id="btnSearch">搜索</button>
+          <button class="btn ghost small" id="btnClearSearch" hidden>清除</button>
+          <select id="libSort" class="lib-sort" title="列表按什么排前面">
+            <option value="created">按生成时间</option>
+            <option value="mtime">按修改时间</option>
+          </select>
+          <button class="btn ghost small" id="btnNewCollection">+ 收藏夹</button>
+        </div>
+      </header>
+      <div class="lib-crumb" id="libCrumb" hidden>
+        <button class="btn ghost small" id="btnLibBack">← 全部收藏夹</button>
+        <span class="lib-crumb-name" id="libCrumbName"></span>
+        <span class="lib-crumb-spacer"></span>
+        <span class="lib-picked" id="libPicked" hidden></span>
+        <button class="btn ghost small" id="btnSelectMode">多选</button>
+        <button class="btn primary small" id="btnMovePicked" hidden>移动到…</button>
+      </div>
+      <div class="note-grid" id="kbGrid"></div>
+    </section>
+
+    <!-- 概念：跨视频知识索引 -->
+    <section class="view" id="view-concepts">
+      <header class="page-head">
+        <div>
+          <h1>概念</h1>
+          <p class="sub" id="conceptSub">同一个概念在哪几集讲过——把分散在各篇笔记里的知识串起来</p>
+        </div>
+        <div class="kb-tools">
+          <label class="chip kg-toggle" title="景点、鸡汤、常识、例题步骤、关系句、变量不算知识点，默认隐藏；取消勾选可看全部">
+            <input type="checkbox" id="conceptKnowledgeOnly" checked><span>只看知识类</span>
+          </label>
+          <div class="seg" id="conceptGroupMode" title="按主题：概念挂在所属方法下面；按视频：按笔记分组">
+            <button class="seg-item active" data-gm="topic">按主题</button>
+            <button class="seg-item" data-gm="note">按视频</button>
+          </div>
+          <div class="seg" id="conceptFilter">
+            <button class="seg-item active" data-cf="all">全部</button>
+            <button class="seg-item" data-cf="multi">跨多篇</button>
+            <button class="seg-item" data-cf="carded">有卡片</button>
+            <button class="seg-item" data-cf="cardonly">只来自卡片</button>
+          </div>
+          <input type="text" id="conceptSearch" placeholder="搜概念…" autocomplete="off">
+          <button class="btn ghost small" id="btnTidyConcepts"
+            title="派生说法并回主体、层级重挂到真实概念上；配了模型时还会让 AI 认一遍（它只能并进已有概念或保持独立，不能发明概念）。手动改过的不会被改。">整理</button>
+          <button class="btn ghost small" id="btnRefreshConcepts">刷新</button>
+        </div>
+      </header>
+
+      <div class="concept-wrap">
+        <div class="panel concept-side">
+          <div class="concept-list" id="conceptList"><p class="empty">加载中…</p></div>
+        </div>
+        <div class="panel concept-main" id="conceptDetail">
+          <p class="empty">左边选一个概念</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 自测：出题 → 做题 → 错题变卡片 -->
+    <section class="view" id="view-quiz">
+      <header class="page-head">
+        <div>
+          <h1>自测</h1>
+          <p class="sub" id="quizSub">按笔记出一套题，做完把错题直接变成复习卡片</p>
+        </div>
+        <button class="btn ghost small" id="btnQuizRefresh">刷新</button>
+      </header>
+
+      <div class="panel quiz-gen" id="quizGenPanel">
+        <div class="panel-title">出一套新卷子</div>
+        <div class="quiz-gen-row">
+          <div class="field">
+            <label>范围</label>
+            <select id="quizScope"></select>
+          </div>
+          <div class="field">
+            <label>题量</label>
+            <select id="quizCount">
+              <option value="5">5 题 · 快速过一遍</option>
+              <option value="10" selected>10 题 · 刚好</option>
+              <option value="15">15 题 · 认真测</option>
+              <option value="20">20 题 · 整章复习</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>题型</label>
+          <div class="quiz-kinds" id="quizKinds">
+            <label class="chip"><input type="checkbox" value="single" checked><span>单选</span></label>
+            <label class="chip"><input type="checkbox" value="judge" checked><span>判断</span></label>
+            <label class="chip"><input type="checkbox" value="multi"><span>多选</span></label>
+            <label class="chip"><input type="checkbox" value="blank"><span>填空</span></label>
+          </div>
+          <p class="hint">手机上全是选择题最省事：默认「单选 + 判断」，点两下就能答完。</p>
+        </div>
+        <div class="row">
+          <button class="btn primary small" id="btnQuizGen">出题</button>
+          <span class="hint" id="quizGenState"></span>
+        </div>
+      </div>
+
+      <div class="panel" id="quizRunPanel" hidden>
+        <div class="quiz-run-top">
+          <span class="quiz-progress" id="quizProgress">1 / 10</span>
+          <span class="quiz-run-title" id="quizRunTitle"></span>
+          <button class="btn ghost small" id="btnQuizQuit">退出</button>
+        </div>
+        <div class="quiz-bar"><i id="quizBar"></i></div>
+        <div class="quiz-stem" id="quizStem"></div>
+        <div class="quiz-opts" id="quizOpts"></div>
+        <div class="quiz-run-foot">
+          <button class="btn ghost small" id="btnQuizPrev">上一题</button>
+          <button class="btn ghost small" id="btnQuizNext">下一题</button>
+          <button class="btn primary small" id="btnQuizSubmit">交卷</button>
+        </div>
+      </div>
+
+      <div class="panel" id="quizResultPanel" hidden>
+        <div class="quiz-score" id="quizScore"></div>
+        <div class="quiz-result-acts">
+          <button class="btn small" id="btnQuizAgain">再做一遍</button>
+          <button class="btn primary small" id="btnQuizCards">错题变卡片</button>
+        </div>
+        <div id="quizResultList"></div>
+      </div>
+
+      <div class="panel" id="quizListPanel">
+        <div class="panel-title">做过的卷子</div>
+        <div id="quizList"><p class="empty">还没有卷子，上面选个范围出一套</p></div>
+      </div>
+    </section>
+
+    <!-- 复习：知识卡片 -->
+    <section class="view" id="view-review">
+      <header class="page-head">
+        <div>
+          <h1>复习</h1>
+          <p class="sub" id="reviewSub">把笔记里的知识拆成卡片，按遗忘曲线安排复习</p>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn ghost small" id="btnCleanExamples"
+            title="答案在复述某道题的具体系数（第一行乘 1/3…）的卡片，复习时记不住也搬不动">清理例题卡</button>
+          <button class="btn ghost small" id="btnDedupeCards"
+            title="同一篇笔记里换个说法问同一件事的卡片，保留复习次数多的那张">查重</button>
+          <button class="btn ghost small" id="btnReviewRules">排期规则</button>
+          <button class="btn ghost small" id="btnRefreshCards">刷新</button>
+        </div>
+      </header>
+
+      <div class="panel scope-panel">
+        <div class="scope-row">
+          <span class="scope-label">复习范围</span>
+          <select id="scopeSelect" class="scope-select"></select>
+          <button class="btn ghost small" id="btnScopeCustom">自定义…</button>
+          <span class="scope-hint" id="scopeHint"></span>
+          <div class="seg" id="reviewKindSeg" style="margin-left:auto">
+            <button class="seg-item active" data-kind="all" title="知识卡和单词卡一起复习">全部</button>
+            <button class="seg-item" data-kind="knowledge" title="笔记里生成的知识卡">知识卡</button>
+            <button class="seg-item" data-kind="word" title="生词变成的单词卡（设置页「生词变卡片」生成）">单词卡</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel review-panel">
+        <div class="review-top">
+          <span class="review-progress" id="reviewProgress">—</span>
+          <span class="review-src" id="reviewSrc"></span>
+        </div>
+
+        <div class="flashcard" id="flashcard">
+          <div class="fc-kind" id="fcKind">概念</div>
+          <div class="fc-front" id="fcFront"></div>
+          <div class="fc-back" id="fcBack" hidden></div>
+          <div class="fc-hint" id="fcHint">先自己回想，再点卡片查看答案（空格）</div>
+        </div>
+
+        <div class="review-actions" id="reviewActions" hidden>
+          <button class="btn grade again" data-grade="again">
+            <span class="g-txt"><b>忘记</b><em class="g-next" data-next="again"></em></span><kbd>1</kbd>
+          </button>
+          <button class="btn grade hard" data-grade="hard">
+            <span class="g-txt"><b>模糊</b><em class="g-next" data-next="hard"></em></span><kbd>2</kbd>
+          </button>
+          <button class="btn grade good" data-grade="good">
+            <span class="g-txt"><b>记得</b><em class="g-next" data-next="good"></em></span><kbd>3</kbd>
+          </button>
+          <button class="btn grade easy" data-grade="easy">
+            <span class="g-txt"><b>太简单</b><em class="g-next" data-next="easy"></em></span><kbd>4</kbd>
+          </button>
+        </div>
+
+        <div class="review-empty" id="reviewEmpty" hidden>
+          <div class="re-title" id="reTitle">这个范围现在没有到期的卡片</div>
+          <p class="hint" id="reHint">换一个范围，或者把范围里的卡片整体过一遍。</p>
+          <div class="re-actions">
+            <button class="btn primary small" id="btnCram" hidden>全部过一遍</button>
+            <button class="btn ghost small" id="btnScopeWiden">改复习范围</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="ph-title">
+            <div class="panel-title">所有卡片</div>
+            <div class="panel-sub" id="libStat"></div>
+          </div>
+          <input type="text" id="cardLibSearch" class="lib-search" placeholder="搜卡片…" autocomplete="off">
+        </div>
+        <p class="hint" style="margin:-6px 0 10px">
+          按收藏夹和笔记分组。点开笔记能看到每一张卡，也可以在这里「现在复习」或删掉。
+          没生成过的笔记在最下面，可以直接生成。
+        </p>
+        <div class="card-lib" id="cardLib"><p class="empty">加载中…</p></div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings">
+      <header class="page-head">
+        <div>
+          <h1>设置</h1>
+          <p class="sub">软件不内置任何 API Key，每人填自己的；密钥用 Windows DPAPI 加密，只有本机本账户能解密</p>
+        </div>
+        <button class="btn primary small" id="btnSaveAll">保存设置</button>
+      </header>
+
+      <div class="settings-grid">
+        <div class="panel theme-panel">
+          <div class="panel-title">界面主题</div>
+          <p class="hint" style="margin:-4px 0 12px">
+            四套皮肤随时换，选择会记在本机。深色/护眼主题也适合长时间看笔记。
+          </p>
+          <div class="theme-grid">
+            <button class="theme-card" data-theme-pick="aurora">
+              <div class="pv"></div>
+              <div class="nm">极光</div>
+              <div class="ds">粉调玻璃 · 柔光流动</div>
+            </button>
+            <button class="theme-card" data-theme-pick="minimal">
+              <div class="pv"></div>
+              <div class="nm">极简</div>
+              <div class="ds">黑白留白 · 专注内容</div>
+            </button>
+            <button class="theme-card" data-theme-pick="tech">
+              <div class="pv"></div>
+              <div class="nm">科技</div>
+              <div class="ds">深空霓虹 · 青色网格</div>
+            </button>
+            <button class="theme-card" data-theme-pick="paper">
+              <div class="pv"></div>
+              <div class="nm">纸感</div>
+              <div class="ds">暖米黄 · 衬线标题</div>
+            </button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">手机访问（双端）</div>
+          <p class="hint" style="margin:-4px 0 12px">
+            打开后，同一 WiFi 的手机能打开同一套界面：刷卡片、看笔记、翻概念。
+            <b>必须带访问口令</b>，同网段的人没有口令进不来。
+          </p>
+          <div class="field">
+            <label>方式一 · 导出单文件（真正离线，推荐）</label>
+            <div class="row">
+              <a class="btn primary small" id="btnExportPack" href="/api/offline/export">导出学习包</a>
+              <span class="hint" id="exportState"></span>
+            </div>
+            <p class="hint">
+              导出一个 .html：笔记、图片、卡片、自测卷全在里面。微信发到手机、用浏览器打开就能用，
+              之后<b>不需要电脑、不需要联网、不用同一 WiFi</b>。有图的包十几兆，导出等十几秒。
+            </p>
+          </div>
+          <div class="field">
+            <label>方式二 · 扫码在线用（电脑要开着，同一 WiFi）</label>
+          </div>
+          <label class="chip" style="margin-bottom:12px">
+            <input type="checkbox" id="setLan"><span>允许同一 WiFi 下的设备访问</span>
+          </label>
+          <div class="field">
+            <label>手机打开这个地址</label>
+            <div class="row">
+              <input type="text" id="lanUrl" class="lan-url" readonly placeholder="打开开关后生成">
+              <button class="btn small" id="btnCopyLan">复制</button>
+            </div>
+            <p class="hint" id="lanState">未开启：只有这台电脑能打开</p>
+          </div>
+          <div class="lan-qr" id="lanQrBox" hidden>
+            <img id="lanQr" alt="手机扫码打开 BiliNotes">
+            <div>
+              <span class="hint">手机扫这个码直接进：地址和口令都在里面，不用手输。
+                第一次进去后，浏览器菜单里「添加到主屏幕」就能像 App 一样打开。</span>
+              <p class="hint" style="margin:8px 0 0">
+                这个码<b>不会每次变</b>：同一台电脑、同一 WiFi、不点「换一个口令」，
+                扫的都是同一张图，可以截图存到手机相册。只有换了 WiFi
+                （路由器重新分配 IP）才需要回来看一眼新码。
+              </p>
+            </div>
+          </div>
+          <div class="row" style="gap:8px;margin-bottom:8px">
+            <button class="btn small" id="btnRotateLan">换一个口令</button>
+            <button class="btn small" id="btnLanDoctor">连不上？自检</button>
+          </div>
+          <div class="lan-doctor" id="lanDoctor" hidden></div>
+          <p class="hint">
+            改监听地址要<b>重启软件</b>才生效；换口令立即生效（手机上要重新输一次）。
+            口令相当于密码，别贴在群里。
+          </p>
+          <p class="hint">
+            手机打不开？先在同一个 WiFi 下，再检查 Windows 防火墙：首次开启时系统会弹
+            「是否允许访问网络」，要选<b>允许</b>；没弹过的话，在「Windows 安全中心 →
+            防火墙 → 允许应用通过防火墙」里给 BiliNotes 打勾。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">英语词库</div>
+          <p class="hint" style="margin:-4px 0 12px">
+            导入四六级、考研之类的词库（CSV / TXT / JSON 都行）。导入之后，
+            <b>英语视频</b>的笔记会在转录上方列出命中的生词，原文里的词可点/悬停看释义；
+            没导入词库时，笔记<b>完全保持原样</b>，一个标记都不加。
+          </p>
+          <div class="wb-list" id="wbList"><p class="empty">还没有导入词库</p></div>
+          <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+            <input type="file" id="wbFile" accept=".csv,.tsv,.txt,.json" hidden>
+            <button class="btn primary small" id="btnImportWords">导入词库</button>
+            <label class="chip" title="只有单词没有释义的行也收进来，之后用「AI 补释义」回填">
+              <input type="checkbox" id="wbKeepMissing"><span>缺释义也导入</span>
+            </label>
+            <button class="btn ghost small" id="btnFillWords"
+              title="只有单词没有释义的词，用上面配的模型批量补中文释义">AI 补释义</button>
+            <button class="btn ghost small" id="btnWordsToCards"
+              title="笔记里遇到过的生词变成复习卡：正面单词、背面释义，进复习队列的「单词卡」分段">生词变卡片</button>
+            <button class="btn ghost small" id="btnRescanWords"
+              title="把已经生成的英语笔记按当前词库重算一遍生词">重算现有笔记</button>
+            <span class="hint" id="wbState"></span>
+          </div>
+          <p class="hint">
+            CSV 表头认 <code>word</code>/<code>单词</code>、<code>pos</code>/<code>词性</code>、
+            <code>meaning</code>/<code>释义</code>/<code>中文</code>；TXT 每行「单词 释义」也认。
+            只有单词没释义的行默认会报「缺释义」——勾上「缺释义也导入」就能先收进来，
+            再用「AI 补释义」回填。有问题的行不会被悄悄丢掉，会告诉你第几行、为什么。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">文字模型</div>
+          <p class="hint" style="margin:-4px 0 12px">
+            转写润色、翻译、写摘要、标重点都用这里的模型。每家的 Key 分开存放，
+            <b>在这里填的 Key 只属于上面选中的那一家</b>。
+          </p>
+          <div class="field">
+            <label>供应商</label>
+            <select id="setProvider"></select>
+            <p class="hint" id="providerHint"></p>
+          </div>
+          <div class="field">
+            <label>API Key</label>
+            <div class="row">
+              <input type="password" id="setKey" placeholder="粘贴 Key">
+              <button class="btn small" id="btnSaveKey">保存</button>
+            </div>
+            <p class="hint" id="keyState">未配置</p>
+            <p class="hint">
+              这把 Key 只存在你这台电脑上，调用模型时直接发往你选的服务商，软件作者的账号完全不参与。
+              换台电脑或换个人用，都要各自填自己的。
+            </p>
+          </div>
+          <div class="field">
+            <label>连通性</label>
+            <div class="row">
+              <button class="btn small" id="btnTest">测试连接</button>
+              <span class="status" id="testMsg"></span>
+            </div>
+          </div>
+          <p class="hint">没有 Key 也能用：会输出转写全文 + 关键画面 + 画面文字，只是没有 AI 摘要。</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">处理参数</div>
+          <div class="field">
+            <label>语音转写档位（仅在视频没有字幕时使用）</label>
+            <select id="setAsr">
+              <option value="tiny">tiny · 75MB，最快，专有名词易错</option>
+              <option value="base">base · 145MB，较快，日常可用</option>
+              <option value="small">small · 484MB，较准，但要多等几倍</option>
+              <option value="medium">medium · 1.5GB，准确但很慢</option>
+            </select>
+            <p class="hint">首次使用会自动下载所选模型。网络差时建议先用 tiny 跑通流程。</p>
+          </div>
+          <div class="field">
+            <label>转写语种（仅在视频没有字幕时使用）</label>
+            <select id="setAsrLang">
+              <option value="auto">自动检测 · 抽三段音频判断（推荐）</option>
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
+              <option value="ja">日文</option>
+              <option value="ko">韩文</option>
+            </select>
+            <p class="hint">
+              自动检测约多花 10 秒。若明确知道视频是外语，直接指定更稳。
+              外语素材成稿时会自动译为中文，原文写在括号里。
+            </p>
+          </div>
+          <div class="field">
+            <label>笔记详细度</label>
+            <select id="setDetail">
+              <option value="brief">简洁 · 每段最多 5 张，出稿最快</option>
+              <option value="standard">适中 · 每段最多 8 张（推荐）</option>
+              <option value="detailed">详细 · 每段不设上限，画面全部保留</option>
+            </select>
+            <p class="hint" id="detailHint"></p>
+          </div>
+          <div class="field">
+            <label>每段最多保留画面张数（由详细度决定）</label>
+            <input type="text" id="setFrames" placeholder="8 张" readonly>
+          </div>
+          <div class="field">
+            <label>并行处理</label>
+            <label class="chip" style="margin-top:4px">
+              <input type="checkbox" id="setParallel" checked>
+              <span>转写与画面分析同时进行（CPU 核心少时建议关闭）</span>
+            </label>
+          </div>
+          <div class="field">
+            <label>画面清晰度</label>
+            <label class="chip" style="margin-top:4px">
+              <input type="checkbox" id="setHd" checked>
+              <span>关键帧用 1080p 重取（关闭可提速，但 PPT 小字会糊）</span>
+            </label>
+          </div>
+          <div class="field">
+            <label>笔记输出目录</label>
+            <input type="text" id="setOutput" placeholder="默认：文档\BiliNotes">
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">转录润色</div>
+          <p class="hint">在生成"完整转录"时调优文本，需要已配置模型 Key 才生效。</p>
+          <div class="field">
+            <label class="chip" style="margin-top:4px">
+              <input type="checkbox" id="setPolish" checked>
+              <span>智能标点：给转录文本补全 / 修正断句符号，不改写词句</span>
+            </label>
+          </div>
+          <div class="field">
+            <label>外语视频的完整转录</label>
+            <select id="setBilingual">
+              <option value="bilingual">双语 · 一行外语，一行中文（推荐）</option>
+              <option value="source">只保留外语原文（不翻译）</option>
+            </select>
+            <p class="hint">
+              只对非中文视频生效，中文视频不受影响。选"只原文"就不额外花模型额度做翻译。
+            </p>
+          </div>
+          <div class="field">
+            <label class="chip" style="margin-top:4px">
+              <input type="checkbox" id="setCaption" checked>
+              <span>画面要点：从画面（PPT/板书）有选择地提取题目与分点，讲解补全细节，并喂给总结做笔记</span>
+            </label>
+          </div>
+          <div class="field">
+            <label class="chip" style="margin-top:4px">
+              <input type="checkbox" id="setItinerary" checked>
+              <span>行程路线：旅行类视频自动抽出「地点顺序 + 交通 + 花费」行程单</span>
+            </label>
+          </div>
+          <div class="field">
+            <label>看图模型（可选，让 AI 真的"看"关键帧）</label>
+            <select id="setVision"></select>
+            <p class="hint" id="visionHint"></p>
+          </div>
+          <div class="field" id="visionModelRow" hidden>
+            <label>看图模型名（可改）</label>
+            <input type="text" id="setVisionModel" list="visionModelList" placeholder="如 glm-4.6v-flashx">
+            <datalist id="visionModelList"></datalist>
+            <p class="hint">
+              各家模型改名很勤、控制台里也不一定列出老型号。默认给你的是实测能用的那个；
+              如果你在控制台里看到的名字不一样，直接改成你看到的那个。
+            </p>
+          </div>
+          <div class="field" id="visionKeyRow" hidden>
+            <label>看图 API Key</label>
+            <div class="row">
+              <input type="password" id="setVisionKey" placeholder="粘贴看图模型的 Key">
+              <button class="btn small" id="btnSaveVisionKey">保存</button>
+            </div>
+            <p class="hint" id="visionKeyState">未配置</p>
+            <p class="hint">这把 Key 存在看图服务商自己的槽位，不会覆盖上面的文字模型 Key。</p>
+          </div>
+          <div class="field" id="visionCustomRow" hidden>
+            <label>自定义服务地址</label>
+            <input type="text" id="setVisionUrl" placeholder="https://.../v1">
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">磁盘占用</div>
+          <div class="field">
+            <label>处理完成后</label>
+            <select id="setCachePolicy">
+              <option value="media">自动删除视频和音频（推荐）</option>
+              <option value="all">连抽帧、中间文件一起删（最省空间）</option>
+              <option value="keep">全部保留（不清理）</option>
+            </select>
+            <p class="hint">
+              视频和音频是体积最大的中间产物：一条 17 分钟的视频约 70MB，
+              处理完就没有任何步骤再读它。关键帧在生成笔记时已复制进笔记目录，
+              <b>所以清理缓存不会影响已生成的笔记</b>。
+            </p>
+          </div>
+          <div class="field">
+            <label>当前下载缓存</label>
+            <div class="cache-row">
+              <span class="status" id="cacheState">统计中…</span>
+              <button class="btn ghost small" id="btnClean">立即清理</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">运行环境</div>
+          <div class="field">
+            <label>ffmpeg（画面提取与音频转写必需）</label>
+            <div class="field">
+              <span class="status" id="ffState">检测中…</span>
+            </div>
+            <button class="btn ghost small" id="btnFf" hidden>一键下载（约 92MB）</button>
+            <p class="hint">
+              安装包已自带 ffmpeg / ffprobe（7.1），正常情况下无需任何操作。
+              若显示「未找到」，可在这里一键下载到用户目录长期复用，支持断点续传。
+            </p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">软件更新</div>
+          <div class="field">
+            <label>当前版本</label>
+            <span class="status" id="updVersion">读取中…</span>
+          </div>
+          <div class="field">
+            <label>GitHub 仓库（用户名/仓库名）</label>
+            <div class="cache-row">
+              <input type="text" id="updRepo" placeholder="例如 someone/BiliNotes"
+                     style="flex:1 1 auto" autocomplete="off">
+              <button class="btn ghost small" id="btnUpdSave">保存</button>
+            </div>
+            <p class="hint">发版时把安装包传到仓库的 Releases 即可；没填就不联网检查。</p>
+          </div>
+          <div class="field">
+            <label>下载镜像（可选，连不上 GitHub 时再填）</label>
+            <input type="text" id="updMirror" placeholder="例如 https://gh-proxy.com" autocomplete="off">
+          </div>
+          <div class="field">
+            <div class="cache-row">
+              <button class="btn ghost small" id="btnUpdCheck">检查更新</button>
+              <button class="btn ghost small" id="btnUpdRelease" hidden>查看发布页</button>
+            </div>
+            <span class="status" id="updState">未检查</span>
+          </div>
+          <div id="updNew" hidden>
+            <p class="hint" id="updNotes"></p>
+            <div class="cache-row">
+              <button class="btn primary small" id="btnUpdDownload">下载更新</button>
+              <button class="btn primary small" id="btnUpdInstall" hidden>安装并重启</button>
+            </div>
+            <span class="status" id="updProgress"></span>
+          </div>
+          <p class="hint">
+            安装时会先关闭本窗口，再弹出系统权限确认（UAC）。你的笔记、配置和密钥都会保留。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">关于</div>
+          <p class="hint">
+            BiliNotes 把视频、字幕、画面文字合成一份结构化笔记：<br>
+            关键帧由感知哈希检测画面切换后择优截取，<br>
+            PPT / 代码 / 公式经 OCR 还原成 Markdown，<br>
+            分块总结后自动生成思维导图。<br><br>
+            全部处理在本机完成，只在你配置了模型时才会把文字发给对应服务商——
+            用的是你自己填的 Key，消耗的是你自己的额度，软件不内置、也不代收任何 Key。
+          </p>
+          <div class="field">
+            <label>这是本机程序，不是网站</label>
+            <p class="hint">
+              关掉窗口 = 程序退出，浏览器里那个 127.0.0.1 地址随即失效。<br>
+              下次请从<strong>桌面图标</strong>或<strong>开始菜单</strong>打开，不要把本地地址存成书签；
+              它不会在后台常驻，也不会开机自启。<br>
+              手机扫码的局域网地址同理：只在软件开着、且两台设备连同一 WiFi 时有效。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 阅读器 -->
+<div class="reader" id="reader" hidden>
+  <div class="reader-bar">
+    <button class="btn ghost small" id="readerBack">← 返回</button>
+    <span class="reader-title" id="readerTitle"></span>
+    <div class="reader-tabs" id="readerTabs">
+      <button class="reader-tab active" data-tab="note">笔记</button>
+      <button class="reader-tab" data-tab="lecture">讲义</button>
+    </div>
+    <button class="btn primary small" id="btnMakeLecture" hidden>生成讲义</button>
+    <div class="spacer"></div>
+    <button class="btn ghost small" id="btnExport">导出 / 打印</button>
+    <button class="btn ghost small" id="readerReveal">打开文件夹</button>
+    <button class="btn ghost small" id="readerZip">下载整包</button>
+    <button class="btn ghost small danger" id="readerDel">删除</button>
+  </div>
+  <article class="markdown" id="readerBody"></article>
+</div>
+
+<!-- 合集选集：看清楚一共多少集，按序号挑着做 -->
+<dialog class="dlg pick-dlg" id="pickDlg">
+  <h3 id="pickTitle">合集选集</h3>
+  <p class="hint" id="pickSub">正在读取合集信息…</p>
+
+  <div class="pick-tools">
+    <input type="text" id="pickRange" placeholder="例：3,5-7,11-20（也可用空格或顿号分隔）" autocomplete="off">
+    <button class="btn primary small" id="pickApply">套用</button>
+  </div>
+  <div class="pick-quick">
+    <button class="btn ghost small" data-pick-act="all">全选</button>
+    <button class="btn ghost small" data-pick-act="invert">反选</button>
+    <button class="btn ghost small" data-pick-act="undone">只选未做</button>
+    <button class="btn ghost small" data-pick-act="none">清空</button>
+    <span class="pick-count" id="pickCount">已选 0 集</span>
+  </div>
+
+  <div class="ep-list" id="epList"></div>
+
+  <label class="chip redo-opt" title="默认会跳过已经生成过笔记的集；勾上则重新处理，并用新结果覆盖原笔记">
+    <input type="checkbox" id="pickRedo">
+    <span>重做已经做过的集（会覆盖原笔记，默认跳过）</span>
+  </label>
+
+  <p class="hint" id="pickState"></p>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="pickCancel">取消</button>
+    <button class="btn primary small" id="pickOk">加入队列</button>
+  </div>
+</dialog>
+
+<!-- 选择复习范围：按收藏夹分组多选笔记 -->
+<dialog class="dlg scope-dlg" id="scopeDlg">
+  <h3>选择复习范围</h3>
+  <p class="hint">勾选要放在一起复习的笔记，可以跨收藏夹混着选。</p>
+  <div class="scope-tools">
+    <input type="text" id="scopeSearch" placeholder="搜笔记标题…" autocomplete="off">
+    <button class="btn ghost small" id="scopeUndue">只选有待复习的</button>
+  </div>
+  <div class="scope-groups" id="scopeGroups"></div>
+  <p class="hint" id="scopeState"></p>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="scopeClear">清空</button>
+    <button class="btn ghost small" id="scopeCancel">取消</button>
+    <button class="btn primary small" id="scopeOk">用这些笔记复习</button>
+  </div>
+</dialog>
+
+<!-- 复习排期说明 -->
+<dialog class="dlg rules-dlg" id="rulesDlg">
+  <h3>复习是怎么排期的</h3>
+  <p class="hint">用的是 SM-2 的简化版。你按哪一档，决定这张卡下次什么时候再来——
+    按钮上会直接写出「按下去会推到多久之后」。</p>
+  <table class="rules-table">
+    <tr><th>忘记</th><td>10 分钟后再来一次，连击清零、熟练度下调</td></tr>
+    <tr><th>模糊</th><td>先放 1 天；之后每次间隔只小幅增长</td></tr>
+    <tr><th>记得</th><td>第 1 次 1 天、第 2 次 3 天，之后按熟练度递增</td></tr>
+    <tr><th>太简单</th><td>起步 3 天，熟练度上调，之后增长更快</td></tr>
+  </table>
+  <p class="hint">
+    间隔最长半年；熟练度（ease）限制在 1.3~2.8——忘得越多，这张卡来得越勤。
+    复习中卡片会自动往下走、今天的到期数递减；全部过完会提示「今天的复习完成了」。
+  </p>
+  <div class="dlg-foot">
+    <button class="btn primary small" id="rulesClose">知道了</button>
+  </div>
+</dialog>
+
+<!-- 导出 / 打印：PDF、Word、直接打印 -->
+<dialog class="dlg export-dlg" id="exportDlg">
+  <h3>导出 / 打印</h3>
+  <p class="hint" id="exportSub">选择一种方式，适合打印或存档</p>
+  <label class="chip" style="margin:12px 0 4px">
+    <input type="checkbox" id="expTranscript">
+    <span>包含完整转录（页数会多很多，一般不用勾）</span>
+  </label>
+  <div class="export-list">
+    <button class="export-item" data-fmt="pdf">
+      <span class="ei-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
+      </span>
+      <span class="ei-txt"><b>PDF</b><em>版式和网页一致，公式与截图原样保留，最适合打印和分享</em></span>
+    </button>
+    <button class="export-item" data-fmt="docx">
+      <span class="ei-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/><path d="M8 12l1.5 5L11 13l1.5 4L14 12"/></svg>
+      </span>
+      <span class="ei-txt"><b>Word 文档</b><em>可以在 Word / WPS 里继续改字、加批注，公式是 Word 原生公式</em></span>
+    </button>
+    <button class="export-item" data-fmt="print">
+      <span class="ei-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V4h12v5"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 17h12v4H6z"/></svg>
+      </span>
+      <span class="ei-txt"><b>直接打印</b><em>调出系统打印对话框，也可以在那里选「另存为 PDF」</em></span>
+    </button>
+  </div>
+  <p class="hint" id="exportState"></p>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="exportCancel">关闭</button>
+  </div>
+</dialog>
+
+<!-- 输入名字的小弹窗：新建收藏夹用 -->
+<dialog class="dlg" id="promptDlg">
+  <h3 id="promptTitle">新建收藏夹</h3>
+  <input type="text" id="promptInput" maxlength="40" autocomplete="off">
+  <p class="hint" id="promptHint"></p>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="promptCancel">取消</button>
+    <button class="btn primary small" id="promptOk">确定</button>
+  </div>
+</dialog>
+
+<!-- 移动笔记到别的收藏夹 -->
+<dialog class="dlg" id="moveDlg">
+  <h3>移动到收藏夹</h3>
+  <p class="hint" id="moveSub"></p>
+  <div class="move-list" id="moveList"></div>
+  <button class="btn ghost small" id="btnMoveNew">+ 新建收藏夹</button>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="moveCancel">取消</button>
+    <button class="btn primary small" id="moveOk">移动</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/app.js?v=20261109b"></script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+{
+  "is_travel": true,
+  "summary": "越南河内大学生免费导游，游河内、岘港巴拿山、会安古镇。",
+  "stops": [
+    {
+      "order": 1,
+      "name": "河内大学",
+      "city": "河内",
+      "kind": "景点",
+      "ts": 0.0,
+      "what": "参观大学，与大学生交流",
+      "cost": ""
+    },
+    {
+      "order": 2,
+      "name": "火车街",
+      "city": "河内",
+      "kind": "景点",
+      "ts": 159.97,
+      "what": "看火车穿街而过",
+      "cost": ""
+    },
+    {
+      "order": 3,
+      "name": "文庙",
+      "city": "河内",
+      "kind": "景点",
+      "ts": 273.55,
+      "what": "参观越南第一所大学",
+      "cost": ""
+    },
+    {
+      "order": 4,
+      "name": "河内大教堂",
+      "city": "河内",
+      "kind": "景点",
+      "ts": 359.47,
+      "what": "参观新哥特式教堂",
+      "cost": ""
+    },
+    {
+      "order": 5,
+      "name": "甜品店",
+      "city": "河内",
+      "kind": "餐饮",
+      "ts": 419.13,
+      "what": "请大学生吃甜品",
+      "cost": ""
+    },
+    {
+      "order": 6,
+      "name": "巴拿山乐园",
+      "city": "岘港",
+      "kind": "景点",
+      "ts": 538.0,
+      "what": "游玩佛手桥、法国村等",
+      "cost": ""
+    },
+    {
+      "order": 7,
+      "name": "会安古镇",
+      "city": "会安",
+      "kind": "景点",
+      "ts": 742.72,
+      "what": "体验传统服饰、放花灯",
+      "cost": ""
+    },
+    {
+      "order": 8,
+      "name": "椰子船",
+      "city": "会安",
+      "kind": "景点",
+      "ts": 786.74,
+      "what": "乘坐椰子船游览",
+      "cost": "45块钱"
+    }
+  ],
+  "legs": [
+    {
+      "from_order": 1,
+      "to_order": 2,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 2,
+      "to_order": 3,
+      "transport": "摩托车",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 3,
+      "to_order": 4,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 4,
+      "to_order": 5,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 5,
+      "to_order": 6,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 6,
+      "to_order": 7,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    },
+    {
+      "from_order": 7,
+      "to_order": 8,
+      "transport": "",
+      "cost": "",
+      "duration": "",
+      "note": ""
+    }
+  ],
+  "budget": "视频明确提到椰子船两人45块钱、一套衣服150块钱；住宿、餐饮、门票等花费未提及。",
+  "cities": [
+    "河内",
+    "岘港",
+    "会安"
+  ]
+}
