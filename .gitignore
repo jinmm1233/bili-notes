@@ -21,6 +21,8 @@ dist/
 
 # 安装包是 GitHub Release 资产，不进 git（单个就 210MB，GitHub 限 100MB）
 installer/dist/
+# 安装流程自测用的隔离包（同 installer/BiliNotes-test.iss 编译出来的）
+installer/dist-test/
 
 # 打包用的 ffmpeg / ffprobe 本地副本（175MB）：运行时会自动下载到用户目录，
 # 只有根目录这一份是构建副本；vendor/bin 里的工具要保留。
