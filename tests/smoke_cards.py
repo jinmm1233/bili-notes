@@ -311,6 +311,36 @@ def test_example_cards(tmp: Path) -> None:
     ok(done["removed"] == 1 and len(left) == 1, "确认后只删例题卡")
     ok("单位矩阵" in (left[0]["front"] if left else ""), "通用卡保留")
 
+def test_delete_note_clears_cards(tmp: Path) -> None:
+    """删笔记要连带清掉这张笔记生成的卡片。
+
+    以前只有 DELETE /api/cards/note/{id} 能清，而前端删笔记并不调它——
+    笔记进回收站了，卡片还留在复习队列里，来源链接打不开。
+    """
+    from app.services import library as L  # noqa: PLC0415
+
+    settings = Settings(data_dir=tmp, output_dir=tmp / "notes")
+    note_id = "TED英语演讲逐句讲解"
+    folder = Path(settings.output_dir) / note_id
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "notes.md").write_text(
+        '---\ntitle: "讲解"\n---\n\n正文\n', encoding="utf-8")
+    C.save(settings, [
+        {"id": "card000000000000a", "front": "来自这篇笔记的卡片", "back": "答案",
+         "note_id": note_id, "concept": "语法", "kind": "概念"},
+        {"id": "card000000000000b", "front": "来自另一篇笔记的卡片", "back": "答案",
+         "note_id": "别的笔记", "concept": "语法", "kind": "概念"},
+    ])
+
+    result = L.delete_note(settings, note_id)
+    ok(result.get("cards_removed") == 1,
+       f"删笔记顺带清掉 1 张卡片（实际 {result.get('cards_removed')}）")
+    left = C.load(settings)
+    ok(len(left) == 1 and left[0].get("note_id") == "别的笔记",
+       "别的笔记的卡片不受影响")
+    ok(not folder.exists(), "笔记目录已移出（进回收站）")
+
+
 def main() -> int:
     print("=== 解析与去重 ===")
     test_parse()
@@ -332,6 +362,9 @@ def main() -> int:
     print("\n=== 例题卡 ===")
     with tempfile.TemporaryDirectory() as raw:
         test_example_cards(Path(raw))
+    print("\n=== 删笔记连带清卡片 ===")
+    with tempfile.TemporaryDirectory() as raw:
+        test_delete_note_clears_cards(Path(raw))
     print()
     if FAILED:
         print(f"{FAILED} 项未通过")

@@ -688,8 +688,21 @@ def delete_note(settings: Settings, note_id: str) -> dict[str, Any]:
 
     shutil.move(str(folder), str(target))
     pruned = _prune_trash(trash)
-    log.info("删除笔记 %s → 回收站 %s（顺带清理 %d 项）", note_id, target.name, pruned)
-    return {"id": note_id, "trash_name": target.name, "pruned": pruned}
+
+    # 这篇笔记生成的生词卡片要一起清：笔记进了回收站，卡片留在复习队列里
+    # 就成了打不开来源的脏数据。以前只有 DELETE /api/cards/note/{id} 能清，
+    # 而前端删笔记并不调它，等于这个接口没人用。
+    cards_removed = 0
+    try:
+        from . import cards as card_svc  # noqa: PLC0415
+        cards_removed = card_svc.remove_note(settings, note_id)
+    except Exception as exc:                    # 清卡片失败不该挡住删笔记
+        log.warning("删除笔记后清理卡片失败（不影响删除本身）：%s", exc)
+
+    log.info("删除笔记 %s → 回收站 %s（顺带清理 %d 项 / 卡片 %d 张）",
+             note_id, target.name, pruned, cards_removed)
+    return {"id": note_id, "trash_name": target.name, "pruned": pruned,
+            "cards_removed": cards_removed}
 
 
 def _prune_trash(trash: Path, keep: int = _TRASH_KEEP) -> int:

@@ -65,6 +65,53 @@ FastAPI  app/main.py
 
 按时间倒序。每行都能在 `.workbuddy/memory/YYYY-MM-DD.md` 找到更细的记录。
 
+### 2026-11-10 · 0.2.4 音画锚定 + 全量体检 + 重做图标（01:00）
+
+用户诉求三件：细致做最后的检验（代码/功能/新机能否用）、换好看的图标、
+不上传 GitHub 但把下一次上传的准备做齐。
+
+**一、音画锚定（核心）**
+用户反馈：博主暂停分析 TED 演讲时的口播（无字幕）虽然进了笔记，但配图对不上
+（讲 00:14 的「定语后置」配了 00:36 的药店卡）。根因是时间点在三处被丢掉：
+抽帧只留末帧 ts、总结喂给模型的是两坨没时间的正文、配图让模型猜 cover_ts
+再用 75 秒容差找最近一张。
+- 新增 `app/services/anchors.py`：`SceneSpan`/`Anchor` 模型、按画面停留区间把每句
+  ASR 归到它讲的那张画面、成对材料 `anchor_material()`（预算按锚点数平分，
+  不砍尾部知识点）、`refresh_screens()`。
+- `frames.detect_scene_spans()` 保留全片 `[start,end]`；**锚定必须用全片区间**，
+  从候选帧反推会漏段——实测把 02:41 的 well-dressed 归到 02:30 的 happen to 卡。
+- 锚定选帧优先 `origin=="scene"` 的稳定段末完整帧，不挑动画中间态的均匀帧。
+- 分块在**两句之间**的画面切换处断（不是要求单句跨边界）；总结/大纲改吃成对材料，
+  要求要点带真实画面时间码；配图容差 75s→±8s，取消「一图全篇一次」。
+- `snap_anchor_ts()` 按停留区间吸附（抄成讲解起点也能归到该页），模型整组漏写时间码时
+  `_infer_item_times()` 从逐块要点继承，字面不吻合就不指。
+
+**二、体检查出的真问题**
+- `routes_wordbook.py` 调了不存在的 `rescan_body_notes`（真名 `_rescan_notes`），
+  NameError 被 except 吞掉 → 「补完 AI 释义后重算生词段」静默失效。
+- 删除笔记不清理这篇笔记生成的卡片（`DELETE /api/cards/note/{id}` 无人调用）。
+- 设置页没有「清除已保存的 Key」的入口（后端 DELETE 路由闲置）→ 已补前端。
+- pyflakes 扫出的未使用导入、失效 nonlocal、缺占位符 f-string、numpy 只在注解里用到。
+
+**三、新的验收手段**
+- `app/core/selftest.py` + 探针 `BILINOTES_PROBE=bn_selftest`：让冻出来的 exe 自己
+  跑一遍音画锚定全链路，`verify_bundle.py` 把它当第 4 项检查（32→34 项）。
+- `tools/verify_fresh_install.py`：临时 APPDATA + 临时「我的文档」模拟新机，
+  验目录自动创建、接口无需配置即可通、单实例生效、不污染真实目录（17 项）。
+- `tools/check_api_contract.py`：前端所有 api()/href 入口 vs 后端 openapi 路由表，
+  找出「界面点了就 404」的缺口。
+
+**四、图标**
+`tools/make_icon.py` 代码绘制：≥48px 画完整（渐变底 + 笔记页 + 折角 + 标题/正文线
++ 播放钮），<48px 画简化版（专用小图，不是从 256 缩的），输出 9 尺寸 ICO；
+网页 icon.svg / icon-192 / icon-512 同步成同一套。
+
+**五、发版状态**
+版本 0.2.4，安装包 `installer/dist/BiliNotes-setup-0.2.4.exe`（210.8MB，
+SHA256 `f93e06008af37ba14b0bdb90c36aac6f8fb6a68841c75138b8c11c72641f834c`），
+`SHA256SUMS.txt` 与 `release-notes-0.2.4.md` 已生成。
+**源码未推送**：下一步只剩 `git push` + 在 GitHub 建 tag `v0.2.4` 的 Release。
+
 ### 2026-11-09 · 0.2.3 内置更新绑定真实仓库（22:20）
 
 用户推送报 `fatal: ... Recv failure: Connection was reset`，问「代理还没开要开嘛」。

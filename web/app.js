@@ -3377,6 +3377,19 @@ function onVisionChange() {
   }
 }
 
+async function clearCurrentKey() {
+  const id = $('setProvider').value;
+  const p = providers.find((x) => x.id === id);
+  if (!p || !p.has_key) return;
+  if (!confirm(`确定清除 ${p.label || id} 的 API Key？清除后要重新填写才能用这家模型。`)) return;
+  await api(`/api/settings/key/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const pv = await api('/api/providers');
+  providers = pv.providers || [];
+  renderProviderOptions();
+  onProviderChange();
+  toast('已清除该供应商的 Key');
+}
+
 function onProviderChange() {
   const p = providers.find((x) => x.id === $('setProvider').value);
   if (!p) return;
@@ -3384,6 +3397,8 @@ function onProviderChange() {
   $('keyState').textContent = p.needs_key
     ? (p.has_key ? `当前：${p.masked}` : '该供应商需要 API Key')
     : '本地服务无需 Key';
+  // 已经存过 Key 才给「清除」入口：没存过时这个按钮没意义
+  if ($('clearKeyRow')) $('clearKeyRow').hidden = !p.has_key;
   $('setKey').value = '';
   $('setKey').placeholder = p.needs_key ? '粘贴 API Key' : '无需填写';
   onVisionChange();
@@ -3903,6 +3918,7 @@ async function cleanExampleCards() {
   $('setVisionModel').onchange = () => persistVision().catch((e) => toast(e.message, true));
   $('setVisionUrl').onchange = () => persistVision().catch((e) => toast(e.message, true));
   $('btnSaveKey').onclick = () => saveKey().catch((e) => toast(e.message, true));
+  $('btnClearKey').onclick = () => clearCurrentKey().catch((e) => toast(e.message, true));
   $('btnSaveVisionKey').onclick = () => saveVisionKey().catch((e) => toast(e.message, true));
   $('btnTest').onclick = testConn;
   $('btnSaveAll').onclick = saveAll;

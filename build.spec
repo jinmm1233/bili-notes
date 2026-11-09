@@ -84,6 +84,9 @@ hiddenimports += [
     "uvicorn.lifespan.on",
     "app.api.routes",
     "app.services.pipeline",
+    # 运行时按条件 import：音画锚定（音画对）与打包自检（bn_selftest 探针）
+    "app.services.anchors",
+    "app.core.selftest",
 ]
 
 a = Analysis(  # noqa: F821
