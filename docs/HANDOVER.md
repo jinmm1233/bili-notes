@@ -65,6 +65,23 @@ FastAPI  app/main.py
 
 按时间倒序。每行都能在 `.workbuddy/memory/YYYY-MM-DD.md` 找到更细的记录。
 
+### 2026-11-09 · 0.2.3 内置更新绑定真实仓库（22:20）
+
+用户推送报 `fatal: ... Recv failure: Connection was reset`，问「代理还没开要开嘛」。
+真因：系统代理 `ProxyEnable=0`（配了 `127.0.0.1:7890` 却没启用）、git 也没配代理，
+31.5MB 推送被重置；小的 `git ls-remote` 裸连能通，**别据此判断大推送也没问题**。
+开启 iKuuuVPN 系统代理后重试成功；API 确认仓库 `jinmm1233/bili-notes` 是 Public、
+默认分支 `master`，远端 master 与本地 `e9bbd3d` 一致。
+
+- `app/__init__.py` 的 `__update_repo__` 由空串改为 `jinmm1233/bili-notes`，
+  版本 0.2.2 → 0.2.3（iss 同步）。优先级仍是设置页 > 环境变量 > 打包默认值。
+- `tests/smoke_update.py` 两条「默认没有更新源」的旧断言改成验真实行为：
+  默认值生效 + 临时清空 `U.__update_repo__` 仍测 `not_configured` 兜底；
+  `reset()` 每轮恢复默认值，避免用例互相污染。
+- 本轮 updater 修复（SHA256SUMS 真正读取、多 exe 资产优先选 setup、Range 断点续传、
+  404 明确提示仓库名）随包发布；首个 Release 用 **v0.2.3**，不是旧教程里的 v0.2.2。
+- 文档 8.0 改成「已上传」事实记录，把代理坑写进去；8.1 发版示例已是 0.2.3。
+
 ### 2026-11-09 · 0.2.2 知识库：同一合集折成一张卡（20:20）
 
 用户：「收藏夹里面同一个合集放一块，点进去才有合集的所有视频，不然太杂了」。

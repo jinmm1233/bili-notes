@@ -16,7 +16,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app import __version__  # noqa: E402
+from app import __version__, __update_repo__ as DEFAULT_REPO  # noqa: E402
 from app.core import updater as U  # noqa: E402
 
 FAILED = 0
@@ -35,6 +35,8 @@ def reset() -> Path:
     DATA = Path(tempfile.mkdtemp(prefix="bn_update_"))
     U.get_settings = lambda: SimpleNamespace(data_dir=DATA)
     os.environ.pop("BILINOTES_GITHUB_REPO", None)
+    # 有些用例会临时清空打包默认值，每个用例都从真实默认状态开始
+    U.__update_repo__ = DEFAULT_REPO
     with U._LOCK:
         U._DOWNLOAD.clear()
         U._DOWNLOAD.update({"state": "idle", "progress": 0, "received": 0,
@@ -56,9 +58,14 @@ def test_version() -> None:
 
 def test_config() -> None:
     reset()
-    ok(U.effective_repo() == "", "默认没有更新源")
+    ok(U.effective_repo() == DEFAULT_REPO and bool(DEFAULT_REPO),
+       "打包时写死的仓库地址自动生效")
+    # 「没配仓库」这条兜底仍要测：临时把默认值抹掉，模拟开发者没填的情况
+    U.__update_repo__ = ""
+    ok(U.effective_repo() == "", "清空默认值后确实没有更新源")
     ok(not U.check()["ok"] and U.check()["reason"] == "not_configured",
        "没配仓库时明确回报，不联网")
+    U.__update_repo__ = DEFAULT_REPO
 
     cfg = U.save_config({"repo": "someone/BiliNotes", "auto_check": False})
     ok(cfg["repo"] == "someone/BiliNotes" and cfg["auto_check"] is False,
