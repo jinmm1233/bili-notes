@@ -117,7 +117,7 @@ def wordbooks_fill(body: FillIn, request: Request) -> dict[str, Any]:
     # 释义补上了，笔记里「词库无释义」的占位要重算才看得到
     if result["filled"]:
         try:
-            rescan_body_notes(settings)
+            _rescan_notes(settings)
         except Exception as exc:                    # 重算失败不影响补释义本身
             log.warning("补释义后重算生词段失败：%s", exc)
     return {"ok": True, **result}

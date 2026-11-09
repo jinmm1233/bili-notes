@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -83,10 +82,6 @@ def generate_quiz(body: GenerateIn, request: Request) -> dict[str, Any]:
     if not notes:
         raise HTTPException(400, "先选几篇笔记（或一个收藏夹）")
 
-    material = "\n\n".join(
-        f"=== 《{n.get('title') or n.get('id')}》 ===\n{quiz_svc.source_md(n)}"
-        for n in notes
-    )
     title = (body.title or "").strip()
     if not title:
         if len(notes) == 1:

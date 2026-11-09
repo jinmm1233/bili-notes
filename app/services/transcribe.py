@@ -14,12 +14,15 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from ..core.config import Settings
 from ..core.errors import CancelledError, DependencyMissingError
 from ..core.http import stream_download
 from ..core.models import Segment
+
+if TYPE_CHECKING:                      # 只为类型注解，运行期不引入 numpy
+    import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -265,7 +268,7 @@ def ensure_model(
 
     if not (target / "model.bin").is_file():
         raise DependencyMissingError(
-            f"模型下载不完整（缺少 model.bin），请重试或在设置里换用 tiny 档位"
+            "模型下载不完整（缺少 model.bin），请重试或在设置里换用 tiny 档位"
         )
 
     if on_progress:

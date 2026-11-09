@@ -12,7 +12,6 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable
 
 from ..core.config import Settings

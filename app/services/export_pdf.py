@@ -103,7 +103,7 @@ def export(url: str, out: Path, timeout: float = 150.0) -> Path | None:
 
 def print_url(base_url: str, note_id: str, include_transcript: bool) -> str:
     """拼打印页地址。t=1 带上完整转录，t=0 只打正文（默认，省纸）。"""
-    from urllib.parse import quote, urlencode
+    from urllib.parse import urlencode
 
     query = urlencode({"print": note_id, "t": "1" if include_transcript else "0"})
     return f"{base_url.rstrip('/')}/?{query}"

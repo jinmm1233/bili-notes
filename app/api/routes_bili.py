@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 from ..core.config import get_settings
 from ..core.errors import AuthRequiredError
 from ..services import bili_auth, favorites, library, series as series_svc
-from ..services.task_manager import ACTIVE, TaskManager
+from ..services.task_manager import TaskManager
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")

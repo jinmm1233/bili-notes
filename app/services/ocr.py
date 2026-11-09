@@ -315,7 +315,7 @@ def to_markdown_blocks(blocks: list[dict[str, Any]]) -> str:
     kind = "text"
 
     def flush() -> None:
-        nonlocal buffer, kind
+        nonlocal buffer
         if not buffer:
             return
         joined = "\n".join(buffer)

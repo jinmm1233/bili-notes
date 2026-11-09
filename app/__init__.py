@@ -5,7 +5,7 @@ from pathlib import Path
 
 # 唯一版本来源：/healthz、FastAPI 元信息、/api/settings、iss 的 AppVersion 都跟它对齐。
 # 改版本号时同步改 installer/BiliNotes.iss 里的 MyAppVersion。
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 # GitHub Releases 更新源。上传到仓库后填成 "用户名/仓库名"，也可以用环境变量
 # BILINOTES_GITHUB_REPO 覆盖，或直接在设置页里填（存到用户目录，不用重新打包）。
