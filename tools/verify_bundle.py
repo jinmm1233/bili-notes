@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,7 +36,7 @@ VC_DLLS = (
     "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll",
 )
 PROBES = ("ctranslate2", "onnxruntime", "ctranslate2,onnxruntime",
-          "faster_whisper", "rapidocr_onnxruntime")
+          "faster_whisper", "rapidocr_onnxruntime", "app.services.anchors")
 REQUIRED = (
     "BiliNotes.exe", "BiliNotes-console.exe",
     "_internal/onnxruntime/capi/onnxruntime.dll",
@@ -63,7 +64,7 @@ def sha(path: Path) -> str:
 
 
 def check_files(dist: Path) -> None:
-    print("\n[1/4] 文件齐全")
+    print("\n[1/5] 文件齐全")
     for rel in REQUIRED:
         p = dist / rel
         record(p.exists(), rel, f"{p.stat().st_size} bytes" if p.is_file() else "")
@@ -79,7 +80,7 @@ def check_files(dist: Path) -> None:
 
 
 def check_vc_runtime(dist: Path) -> None:
-    print("\n[2/4] VC++ 运行库版本一致（旧版 msvcp140.dll 会让 onnxruntime 段错误）")
+    print("\n[2/5] VC++ 运行库版本一致（旧版 msvcp140.dll 会让 onnxruntime 段错误）")
     system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
     internal = dist / "_internal"
     for name in VC_DLLS:
@@ -95,7 +96,7 @@ def check_vc_runtime(dist: Path) -> None:
 
 
 def check_probes(dist: Path) -> None:
-    print("\n[3/4] 冻结环境加载重型依赖（探针模式，rc 必须为 0）")
+    print("\n[3/5] 冻结环境加载重型依赖（探针模式，rc 必须为 0）")
     exe = dist / "BiliNotes.exe"
     for mods in PROBES:
         env = dict(os.environ, BILINOTES_PROBE=mods, BILINOTES_CRASHLOG="0")
@@ -109,8 +110,34 @@ def check_probes(dist: Path) -> None:
         record(rc == 0, f"import {mods}", f"rc={rc}" + ("（超时）" if rc == -999 else ""))
 
 
+def check_selftest(dist: Path) -> None:
+    """功能自检：让冻出来的 exe 自己跑一遍音画锚定，证明新逻辑在真机里能用。"""
+    print("\n[4/5] 功能自检（冻结环境跑音画锚定全链路）")
+    exe = dist / "BiliNotes.exe"
+    with tempfile.TemporaryDirectory(prefix="bn_selftest_") as tmp:
+        out = Path(tmp) / "selftest.txt"
+        env = dict(os.environ, BILINOTES_PROBE="bn_selftest",
+                   BILINOTES_PROBE_OUT=str(out), BILINOTES_CRASHLOG="0")
+        env.pop("BILINOTES_WINDOW", None)
+        try:
+            proc = subprocess.run([str(exe)], env=env, cwd=str(dist), timeout=180,
+                                  capture_output=True, creationflags=NO_WINDOW)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            rc = -999
+        detail = ""
+        if out.is_file():
+            detail = out.read_text(encoding="utf-8", errors="replace").strip()
+        passed = rc == 0 and "全部通过" in detail
+        record(passed, "冻结环境功能自检", f"rc={rc}" + (f"｜{detail.splitlines()[-1]}" if detail else ""))
+        if not passed and detail:
+            for line in detail.splitlines():
+                if line.startswith("[FAIL]"):
+                    print(f"      {line}")
+
+
 def check_service(dist: Path) -> None:
-    print("\n[4/4] 启动服务 + 接口冒烟（窗口关掉，避免弹窗干扰）")
+    print("\n[5/5] 启动服务 + 接口冒烟（窗口关掉，避免弹窗干扰）")
     exe = dist / "BiliNotes-console.exe"
     env = dict(os.environ, BILINOTES_WINDOW="0", BILINOTES_OPEN_BROWSER="false")
     proc = subprocess.Popen([str(exe)], env=env, cwd=str(dist),
@@ -208,6 +235,7 @@ def main() -> int:
     check_files(dist)
     check_vc_runtime(dist)
     check_probes(dist)
+    check_selftest(dist)
     if not args.quick:
         check_service(dist)
 

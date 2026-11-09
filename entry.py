@@ -50,6 +50,18 @@ if _probe:
             if _mod:
                 __import__(_mod)
 
+    if _probe == "bn_selftest":
+        # 功能自检：证明冻出来的包里音画锚定这类新逻辑真能跑
+        try:
+            from app.core.selftest import main as _selftest_main
+        except BaseException as exc:                  # noqa: BLE001
+            if _out:
+                with contextlib.suppress(Exception):
+                    with open(_out, "w", encoding="utf-8") as _f:
+                        _f.write(f"{type(exc).__name__}: {exc}")
+            os._exit(3)
+        os._exit(_selftest_main())
+
     try:
         if os.environ.get("BILINOTES_PROBE_THREAD") == "1":
             import threading
