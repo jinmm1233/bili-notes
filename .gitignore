@@ -32,6 +32,7 @@ installer/dist-test/
 
 # 本机临时文件与调试产物
 .tmp_*/
+.tmp_*.py
 .tmp_server.log
 /_c1.py
 /_d.py
