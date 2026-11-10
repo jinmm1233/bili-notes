@@ -558,7 +558,7 @@ select{cursor:pointer;appearance:none;
 .note-tags{margin-top:7px;display:flex;gap:5px;flex-wrap:wrap}
 .tag{font-size:10.5px;padding:1.5px 7px;border-radius:20px;background:var(--tag-bg);color:var(--tag-c)}
 
-.kb-tools{display:flex;gap:8px;align-items:center;flex:0 0 auto}
+.kb-tools{display:flex;gap:8px;align-items:center;flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end}
 .kb-tools input{width:230px}
 .kb-tools .btn{flex:0 0 auto}
 /* 排序口径：固定宽度，别跟着全局 select{width:100%} 把工具栏撑开 */
@@ -1022,7 +1022,34 @@ html[data-theme="paper"] .stat .num{font-weight:600}
 .cd-note-title{font-size:13px;font-weight:500;margin-bottom:3px}
 .cd-note-desc{font-size:12.5px;color:var(--muted);line-height:1.7}
 .cd-note-desc p{margin:0;display:inline}
-.cd-note-foot{font-size:10.5px;color:var(--soft);margin-top:5px}
+.cd-note-foot{font-size:10.5px;color:var(--soft);margin-top:5px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+/* 跳转改成明确的文字提示：整块点着跳走太意外，用户想先读完解释 */
+.cd-note-go{margin-left:auto;color:var(--brand-d);opacity:.75}
+.cd-note:hover .cd-note-go{opacity:1}
+
+/* ---------- 概念：这个概念是什么 ---------- */
+.cd-explain{
+  padding:12px 14px;border:1px solid var(--brand-soft);border-radius:12px;
+  background:var(--brand-soft);margin-bottom:2px;
+}
+.cd-explain .cd-label{color:var(--brand-d);opacity:.8;margin-bottom:6px}
+.cd-explain-body{font-size:14px;line-height:1.85;color:var(--text)}
+.cd-explain-body p{margin:0}
+.cd-explain-body p + p{margin-top:6px}
+.cd-explain-empty{font-size:12.5px;color:var(--muted);line-height:1.7}
+/* 重点标记 */
+.cd-core{
+  display:inline-block;font-size:10px;padding:1px 7px;border-radius:20px;
+  background:var(--ok-soft);color:var(--ok-c);margin-left:6px;
+}
+.cd-core.dim{background:var(--hover-bg);color:var(--soft)}
+/* 列表里重点概念前面的小圆点 */
+.ci-core{
+  color:var(--ok-c);font-size:10px;margin-right:6px;vertical-align:1px;
+  display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--ok-c);
+}
+
 .cd-card{
   display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-bottom:1px solid var(--line-2);
   font-size:12.5px;

@@ -202,22 +202,38 @@ def build(settings: Settings) -> list[dict[str, Any]]:
 
 def summary(settings: Settings) -> dict[str, Any]:
     items = build(settings)
-    return {
-        "total": len(items),
-        "items": [
-            {
-                "key": i["key"],
-                "name": i["name"],
-                "note_count": i["note_count"],
-                "cards": i["cards"],
-                "aliases": i.get("aliases") or [],
-                "tag_name": i.get("tag_name") or i["name"],
-                # 按视频分组用：这个概念主要来自哪篇笔记
-                "primary_note": (i["notes"][0]["title"] if i["notes"] else ""),
-            }
-            for i in items
-        ],
-    }
+    # 重点标记与自足释义来自 concept_explain 缓存（没有就当没判过）。
+    # 没判过的概念排在已判过的后面，但不会被藏起来——用户可能还没点过补全。
+    try:
+        from . import concept_explain
+        cache = concept_explain.load(settings)
+    except Exception:                          # pragma: no cover - 缓存坏不该拖垮整页
+        cache = {}
+
+    out: list[dict[str, Any]] = []
+    for i in items:
+        row = cache.get(i["key"]) or {}
+        out.append({
+            "key": i["key"],
+            "name": i["name"],
+            "note_count": i["note_count"],
+            "cards": i["cards"],
+            "aliases": i.get("aliases") or [],
+            "tag_name": i.get("tag_name") or i["name"],
+            # 按视频分组用：这个概念主要来自哪篇笔记
+            "primary_note": (i["notes"][0]["title"] if i["notes"] else ""),
+            # core：模型判定这个概念在视频里是不是被讲透的重点概念
+            # None = 还没判过
+            "core": (bool(row.get("core")) if row.get("explain") else None),
+            # explain：自足的一句释义（"材料中记为E"这种废话不算）
+            "explain": (str(row.get("explain") or "") if row.get("explain") else ""),
+        })
+    # 排序：先按重点度，再按跨篇数、卡片数
+    out.sort(key=lambda x: (
+        0 if x["core"] else (1 if x["core"] is None else 2),
+        -x["note_count"], -x["cards"], x["name"],
+    ))
+    return {"total": len(out), "items": out}
 
 
 def detail(settings: Settings, key_or_name: str) -> dict[str, Any] | None:
@@ -240,11 +256,29 @@ def detail(settings: Settings, key_or_name: str) -> dict[str, Any] | None:
                     "note_title": card.get("note_title"),
                     "concept": concept,
                 })
+        # 释义：优先用模型写的那份自足解释；没有就退回笔记表里的原话
+        explain = ""
+        core: bool | None = None
+        try:
+            from . import concept_explain
+            row = concept_explain.get(settings, item["name"])
+            if row.get("explain"):
+                explain = str(row["explain"])
+                core = bool(row.get("core"))
+        except Exception:                      # pragma: no cover
+            pass
+        if not explain:
+            for note in item["notes"]:
+                if note.get("explanation"):
+                    explain = str(note["explanation"])
+                    break
         return {
             "key": item["key"],
             "name": item["name"],
             "aliases": item.get("aliases") or [],
             "notes": item["notes"],
             "cards": cards,
+            "explain": explain,
+            "core": core,
         }
     return None

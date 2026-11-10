@@ -270,6 +270,9 @@
           <label class="chip kg-toggle" title="景点、鸡汤、常识、例题步骤、关系句、变量不算知识点，默认隐藏；取消勾选可看全部">
             <input type="checkbox" id="conceptKnowledgeOnly" checked><span>只看知识类</span>
           </label>
+          <label class="chip kg-toggle" title="只保留视频里真正讲过（给了定义或解释）的概念，顺带一提的默认不显示；取消勾选可看全部">
+            <input type="checkbox" id="conceptCoreOnly" checked><span>只看讲透的</span>
+          </label>
           <div class="seg" id="conceptGroupMode" title="按主题：概念挂在所属方法下面；按视频：按笔记分组">
             <button class="seg-item active" data-gm="topic">按主题</button>
             <button class="seg-item" data-gm="note">按视频</button>
@@ -281,6 +284,8 @@
             <button class="seg-item" data-cf="cardonly">只来自卡片</button>
           </div>
           <input type="text" id="conceptSearch" placeholder="搜概念…" autocomplete="off">
+          <button class="btn ghost small" id="btnExplainConcepts"
+            title="让 AI 判断哪些概念是视频重点讲过的，并给每个概念写一句自足的解释（点开概念就能看懂）。已判过的不会重复花钱。">补全释义</button>
           <button class="btn ghost small" id="btnTidyConcepts"
             title="派生说法并回主体、层级重挂到真实概念上；配了模型时还会让 AI 认一遍（它只能并进已有概念或保持独立，不能发明概念）。手动改过的不会被改。">整理</button>
           <button class="btn ghost small" id="btnRefreshConcepts">刷新</button>

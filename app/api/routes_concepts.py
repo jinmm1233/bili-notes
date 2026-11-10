@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..core.config import get_settings
 from ..core.llm import LLMClient
+from ..services import concept_explain as explain_svc
 from ..services import concept_review as review_svc
 from ..services import concept_tags as tag_svc
 from ..services import concepts as concept_svc
@@ -21,6 +22,11 @@ router = APIRouter(prefix="/api")
 
 class TagIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
+
+
+class ExplainIn(BaseModel):
+    names: list[str] = Field(default_factory=list, max_length=200)
+    force: bool = False
     cat: str = Field(pattern="^(knowledge|place|soup|other)$")
 
 
@@ -51,6 +57,8 @@ def list_concepts(q: str = "", limit: int = 500) -> dict[str, Any]:
     # 规则判不出、又看着可疑的（"XX 顺序""XX 使用限制"这类）：提示可以去让 AI 复核
     known = {i["key"]: i["name"] for i in items if i["cat"] not in tag_svc.HIDDEN_CATS}
     reviewable = len(review_svc.ai_candidates(items, tags, known))
+    # 还没判过重点度、也没写释义的：概念页上点"补全释义"要处理的就是这些
+    unjudged = sum(1 for i in items if i.get("core") is None)
     return {
         "total": len(items),
         "items": items[:limit],
@@ -60,6 +68,7 @@ def list_concepts(q: str = "", limit: int = 500) -> dict[str, Any]:
         # 有几条的上级被重新对齐过（模型写的父节点在列表里并不存在）。
         # 前端看到大于 0 就自动整理一次，把修正结果写回缓存。
         "stale": info.get("repaired", 0),
+        "unjudged": unjudged,
     }
 
 
@@ -120,4 +129,24 @@ def tidy_concepts(request: Request, ai: bool = False) -> dict[str, Any]:
     client = LLMClient.from_settings(settings, request.app.state.store) if ai else None
     result = review_svc.tidy(settings, client=client)
     log.info("概念整理：%s", {k: v for k, v in result.items() if k != "ai"})
+    return {"ok": True, **result}
+
+
+@router.post("/concepts/explain")
+def explain_concepts(body: ExplainIn, request: Request) -> dict[str, Any]:
+    """给概念补"重点标记 + 自足释义"。
+
+    概念页上点一下就能知道这个词是什么意思，靠的就是这里写下的 explain。
+    同时判定 core：这个概念在视频里到底有没有被讲透——只是顺带提一句的，
+    会被标成非重点，不占概念页的前排。
+
+    没配文字模型时退回本地规则：只保留笔记表里解释像样的词。
+    一次最多 12 批 × 8 个，没跑完前端会提示"再点一次继续"。
+    """
+    settings = get_settings()
+    items = concept_svc.summary(settings)["items"]
+    names = [n for n in (body.names or []) if n and n.strip()]
+    client = LLMClient.from_settings(settings, request.app.state.store)
+    result = explain_svc.explain(settings, client, items, names=names, force=body.force)
+    log.info("概念释义：%s", result)
     return {"ok": True, **result}

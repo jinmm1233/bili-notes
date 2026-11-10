@@ -978,13 +978,17 @@ async function loadConcepts(autoTidy = true) {
   }
   conceptList = d.items || [];
   conceptHidden = d.hidden || 0;
-  const cardOnly = conceptList.filter((c) => !c.note_count && c.cards);
   const totalCards = conceptList.reduce((s, c) => s + (c.cards || 0), 0);
   const reviewable = d.reviewable || 0;
-  $('conceptSub').textContent = conceptList.length
-    ? `共 ${conceptList.length} 个 · 已隐藏 ${conceptHidden} 个非知识条目`
-      + `${totalCards ? ` · ${totalCards} 张卡片` : ''}`
-      + `${reviewable ? ` · ${reviewable} 条可让 AI 复核` : ''}`
+  const unjudged = d.unjudged || 0;
+  // 这行字挤在标题下面，太长会折成三行把标题区撑开。只留最要紧的两条：
+  // 一共多少个概念、还有多少个没写释义。
+  const bits = [];
+  if (conceptList.length) bits.push(`共 ${conceptList.length} 个概念`);
+  if (unjudged) bits.push(`${unjudged} 个还没写释义`);
+  if (reviewable) bits.push(`${reviewable} 条可让 AI 复核`);
+  $('conceptSub').textContent = bits.length
+    ? bits.join(' · ')
     : '还没有概念：先生成笔记（笔记里会有「关键概念」表）';
   renderConceptList();
   if (conceptList.length) {
@@ -1004,8 +1008,10 @@ function conceptItemHtml(c, isChild) {
     ? (c.cards ? `${c.cards} 卡` : '')
     : [c.note_count > 0 ? `${c.note_count} 篇` : '', c.cards ? `${c.cards} 卡` : '']
       .filter(Boolean).join(' · ');
+  // 重点标记：讲透了的概念前面挂个点，一眼能看出哪些是真正该记的
+  const dot = c.core === true ? '<span class="ci-core" title="视频里讲透了的重点概念"></span>' : '';
   return `<button class="concept-item${isChild ? ' child' : ''}${c.key === conceptKey ? ' active' : ''}" data-key="${esc(c.key)}">
-    <span class="ci-name">${esc(c.name)}</span>
+    <span class="ci-name">${dot}${esc(c.name)}</span>
     <span class="ci-meta">${meta}</span>
   </button>`;
 }
@@ -1071,6 +1077,11 @@ function renderConceptList() {
   // 默认挡掉景点/鸡汤/常识操作；取消勾选可看全部（也能在这里发现误判）
   if ($('conceptKnowledgeOnly').checked) {
     items = items.filter((c) => !['place', 'soup', 'trivial', 'step', 'relation', 'artifact'].includes(c.cat));
+  }
+  // 只看讲透的：视频里给了定义或解释的。还没判过的（core 为 null）先留着，
+  // 否则用户还没点「补全释义」就会看到空列表。
+  if ($('conceptCoreOnly').checked) {
+    items = items.filter((c) => c.core !== false);
   }
   if (conceptFilter === 'multi') items = items.filter((c) => c.note_count > 1);
   if (conceptFilter === 'carded') items = items.filter((c) => c.cards > 0);
@@ -1171,6 +1182,32 @@ async function tidyConcepts() {
   }
 }
 
+/* 补全释义：让 AI 判断哪些概念是视频重点讲过的，并给每个概念写一句
+   自足的解释。点开概念就能知道它是什么意思，不用跳去笔记里找那一行。
+   已判过的不会重复花钱；一次最多 12 批，没跑完会提示再点一次。 */
+async function explainConcepts() {
+  const btn = $('btnExplainConcepts');
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  try {
+    const d = await api('/api/concepts/explain', { method: 'POST', body: JSON.stringify({}) });
+    if (!d.done && !d.skipped) {
+      toast('没有需要补全的概念');
+    } else if (d.done) {
+      toast(`补好 ${d.done} 个概念的释义，其中 ${d.core} 个是重点`);
+    }
+    if (d.skipped) {
+      toast(`还有 ${d.skipped} 个没跑完，再点一次继续`, true);
+    }
+    await loadConcepts(false);
+    if (conceptKey) await selectConcept(conceptKey);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
 function switchGroupMode(mode) {
   conceptGroupMode = mode;
   try { localStorage.setItem('bn.conceptGroup', mode); } catch (e) { /* 隐私模式 */ }
@@ -1216,6 +1253,12 @@ async function selectConcept(key) {
     }[cat] || '未归类';
     const hide = ['place', 'soup', 'trivial', 'step', 'relation', 'artifact'].includes(cat);
     const fixCat = hide ? 'knowledge' : 'trivial';
+    // 「这个概念是什么」放最上面：点开概念就是为了知道它啥意思，
+    // 不该先让人去笔记里找那一行。
+    const explain = (d.explain || '').trim();
+    const coreBadge = d.core === true
+      ? '<span class="cd-core">视频重点讲过</span>'
+      : (d.core === false ? '<span class="cd-core dim">视频里只是提到</span>' : '');
     box.innerHTML = `
       <div class="cd-head">
         <h2 class="cd-name">${esc(d.name)}</h2>
@@ -1223,19 +1266,28 @@ async function selectConcept(key) {
           出现在 ${notes.length} 篇笔记${cards.length ? ` · ${cards.length} 张卡片` : ''}
           ${d.parent ? ` · 属于「${esc(d.parent)}」` : ''}
           ${(d.aliases || []).length ? ` · 也叫「${esc(d.aliases.join('、'))}」` : ''}
+          ${coreBadge}
           <span class="cd-cat cat-${cat}">${catText}</span>
           <button class="cd-fix" data-retag="${esc(d.name)}" data-cat="${fixCat}">
             ${hide ? '其实是知识点' : '不是知识点'}</button>
         </div>
       </div>
+      <div class="cd-section cd-explain">
+        <div class="cd-label">这个概念是什么</div>
+        ${explain
+          ? `<div class="cd-explain-body">${renderMarkdown(explain, d.key)}</div>`
+          : `<div class="cd-explain-empty">还没有解释。点上面的「补全释义」让 AI 写一条，
+               或直接看下面各集笔记里的原话。</div>`}
+      </div>
       <div class="cd-section">
         <div class="cd-label">各集怎么讲</div>
         ${notes.map((n) => `
-          <div class="cd-note" data-note="${esc(n.id)}" title="打开这篇笔记">
+          <div class="cd-note" data-note="${esc(n.id)}">
             <div class="cd-note-title">${esc(n.title)}</div>
             <div class="cd-note-desc">${
               n.explanation ? renderMarkdown(n.explanation, n.id) : '（这篇笔记没有写解释）'}</div>
-            <div class="cd-note-foot">${esc(n.uploader || '')}${n.collection ? ` · ${esc(n.collection)}` : ''}</div>
+            <div class="cd-note-foot">${esc(n.uploader || '')}${n.collection ? ` · ${esc(n.collection)}` : ''}
+              <span class="cd-note-go">打开笔记 →</span></div>
           </div>`).join('') || `<p class="hint">这个概念还没出现在任何笔记的「关键概念」表里，
             只来自生成的卡片。卡片把它标成了同一个知识点，所以这里也能看到。</p>`}
       </div>
@@ -3731,7 +3783,9 @@ function bindEvents() {
 
   $('conceptSearch').addEventListener('input', renderConceptList);
   $('conceptKnowledgeOnly').addEventListener('change', renderConceptList);
+  $('conceptCoreOnly').addEventListener('change', renderConceptList);
   $('btnTidyConcepts').onclick = tidyConcepts;
+  $('btnExplainConcepts').onclick = explainConcepts;
 
   // 概念列表：分组展开/收起 + 选中（列表是动态渲染的，用委托）
   $('conceptList').addEventListener('click', (e) => {
