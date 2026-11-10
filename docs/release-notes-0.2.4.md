@@ -44,8 +44,8 @@ Windows 10 1809+ / Windows 11，建议装有 Microsoft Edge（系统自带）。
 ### 下载与安装
 
 - 安装包：`BiliNotes-setup-0.2.4.exe`（内含主程序、ffmpeg 与 VC++ 运行库）
-- 大小：211.0 MB（221269669 字节）
-- SHA256：`9b4efd6873b065cc43980433971fa1df1c4fdd2b5e686ccedc9ddbb80ebe116d`
+- 大小：211.1 MB（221304194 字节）
+- SHA256：`9be86df4dc96503445bc61d77bc469b8db2e43f5ac14cfaf4192a9eaeb931028`
 
 双击运行 → 系统权限确认点「是」→ 装完从桌面快捷方式打开。
 程序未做代码签名，首次运行若出现「已保护你的电脑」，点「更多信息 → 仍要运行」。
