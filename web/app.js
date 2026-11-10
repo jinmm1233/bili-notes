@@ -3411,6 +3411,20 @@ function onVisionChange() {
       : '这家还没有 Key，填完点保存';
   }
 
+  // 提示要说清"两个 Key 能不能填同一个"：
+  //  - 同一家服务 → 共用同一个 Key 槽，文字和看图都从那儿取，不用填两遍；
+  //  - 不同家 → 各存各的，互不影响。
+  const keyHint = $('visionKeyHint');
+  if (keyHint) {
+    if (sameAsText) {
+      keyHint.textContent = `看图和文字都选了「${prov.label}」，两处共用同一把 Key——`
+        + `上面那把已经存过就不用再填，文字和看图都会用它。`;
+    } else if (v) {
+      keyHint.textContent = '这把 Key 存在看图服务商自己的槽位，不会覆盖上面的文字模型 Key。'
+        + '两家不同服务就各填各的；同一家的话上面那把直接能用。';
+    }
+  }
+
   const hint = $('visionHint');
   if (!v) {
     hint.textContent = '不配置也能出笔记，只是画面要点由画面文字合成。'

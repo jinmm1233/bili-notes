@@ -297,6 +297,21 @@ def test_cache_file():
     ok(len(E.load(settings)) == 1, "坏行不会让缓存整体失效")
 
 
+def test_explain_in_defaults():
+    print("\n--- 接口入参默认值 ---")
+    # 前端发的是 {}（不传任何字段），所以每个字段都必须有默认值，
+    # 否则 Pydantic 报 422，"补全释义"按钮直接不可用。
+    # 这个坑是打包验收时在真机环境上才暴露的，离线测试没覆盖到。
+    from app.api.routes_concepts import ExplainIn
+    body = ExplainIn()
+    ok(body.names == [], f"names 默认空列表（实际 {body.names}）")
+    ok(body.force is False, f"force 默认 False（实际 {body.force}）")
+    ok(body.cat == "knowledge", f"cat 默认 knowledge（实际 {body.cat}）")
+    # 能解析前端真的发的那种 body
+    parsed = ExplainIn.model_validate_json('{"names":[]}')
+    ok(parsed.names == [] and parsed.force is False, "能解析前端发的 {}")
+
+
 if __name__ == "__main__":
     test_parse_items()
     test_fallback()
@@ -306,6 +321,7 @@ if __name__ == "__main__":
     test_explain_model_failure()
     test_summary_integration()
     test_cache_file()
+    test_explain_in_defaults()
     print()
     if FAILED:
         print(f"失败 {FAILED} 项")

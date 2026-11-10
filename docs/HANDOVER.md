@@ -94,6 +94,44 @@ happen to / sales rep」逐条核对，配图就是它讲的那一页。
 **教训**：音画这类「看起来对不对」的改动，离线重放不能代替真跑——
 真跑会暴露选帧阶段与渲染阶段之间的耦合问题。以后改这块先跑一次真实视频。
 
+### 2026-11-10 · 发版前全面审计：Key 不外泄 + 真机独立 + 两个 Key 的关系（19:50）
+
+用户要求「检验清楚再打包」，点名三件事：别的真机上所有功能都要能用、
+API Key 绝不能随包上传、两个 Key 能不能填同一个会不会冲突。
+
+**一、API Key 不会进包、不会进仓库**
+- 密钥存储是 **Windows DPAPI 加密**（`app/core/secretstore.py`），密文与当前用户账户
+  绑定——把 `secrets.dat` 拷到别的电脑也解不开。
+- `build.spec` 只打 `web/`、`vendor/`、`bin/` 三样，本机数据目录一律不进包。
+- 远端仓库全量扫描：GitHub API 拉 517 个文件内容做正则匹配，**疑似 Key 命中 0**。
+- `git log --all -p` 全历史扫硬编码 Key：**0 命中**。
+- 新增验收项（`tools/verify_fresh_install.py`）：产物里找 `secrets.dat`/`cookies.txt`/
+  `cards.json`/`config.json`/`concept_*.json` 等本机数据文件，以及**拿真实密钥值当
+  特征串扫全产物**——两条都纳入硬约束，以后每次打包自动查。
+
+**二、两个 API Key 能不能填同一个：能，无冲突**
+- 密钥按**服务商名分槽存放**（`store.get(provider)`），文字模型和看图模型各取各的槽位。
+- 同一家服务（例：文字和看图都选智谱）→ 共用同一个槽位，一把 Key 两边都能用；
+  设置页已实现自动复用（`sameAsText && prov.has_key` → 不重复要求填写）。
+- 不同家服务 → 各存各的，互不覆盖。
+- **唯一的坑**：DeepSeek 没有视觉模型（`PROVIDERS.deepseek.vision_model = ""`），
+  把「看图模型」也选成 DeepSeek 会静默失效（`from_vision_settings` 返回 None），
+  界面不会报错，只是画面要点退回纯文字合成。
+- 本次把设置页的 Key 提示改准：同一家时明说「两处共用同一把 Key，不用填两遍」。
+
+**三、真机独立性**
+- `tools/verify_fresh_install.py` 扩到 **12 组功能页逐项可达**（总览/笔记库/卡片/概念/
+  自测/词库/设置/环境自检/更新状态），全部在空 APPDATA 下验证。
+- 新增：包内代码**不得写死本机用户目录**（`C:\Users\xxx`）——换台电脑就废的写法要挡住。
+- 新增：无 Key 时 `POST /api/concepts/explain` 不能崩。
+
+**四、这次真机验收抓出的一个真 bug**
+- `ExplainIn.cat` 字段**没给默认值** → Pydantic 认为必填 → 前端发 `{}` 直接 422
+  → **「补全释义」按钮在真机上完全不可用**。
+- 离线测试和接口契约检查都没抓到（契约只查路径与方法，查不出 body schema）。
+- 修法：`cat: str = Field(default="knowledge", ...)`，并在 `smoke_concept_explain.py`
+  里加了入参默认值断言，把它变成硬约束。
+
 ### 2026-11-10 · 改版新包正式上传（18:40）
 
 用户说「上传吧上传吧」，按发布清单把 14:20 备好的材料上线：

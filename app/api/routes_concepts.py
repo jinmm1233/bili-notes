@@ -27,7 +27,9 @@ class TagIn(BaseModel):
 class ExplainIn(BaseModel):
     names: list[str] = Field(default_factory=list, max_length=200)
     force: bool = False
-    cat: str = Field(pattern="^(knowledge|place|soup|other)$")
+    # cat 留着给以后用（只对某一类概念补释义），但必须给默认值——
+    # 否则前端发 {} 就会 422，"补全释义"按钮直接不可用。
+    cat: str = Field(default="knowledge", pattern="^(knowledge|place|soup|other)$")
 
 
 @router.get("/concepts")
