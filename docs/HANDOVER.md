@@ -1,6 +1,6 @@
 # BiliNotes 开发交接文档
 
-> **最后更新**：2026-11-09 10:50 ｜ 对应前端版本 `?v=20261109b`
+> **最后更新**：2026-11-10 13:20 ｜ 0.2.4 已正式发布到 GitHub Releases
 > **用途**：接手或继续开发前先读这一份。它记录了「做了什么」「为什么这么做」「哪些路别再走一遍」。
 > **维护约定**：每完成一个功能，在「四、改动台账」加一行；踩到新坑，在「六、踩坑与禁令」补一条。这两节是本文档的核心价值。
 
@@ -18,7 +18,7 @@
 | 代码规模 | 后端 `app/` 约 41 个模块（services 27 / core 9 / api 5）；前端三件套 index.html 35KB + app.css 61KB + app.js 90KB |
 | 数据目录 | `%APPDATA%\BiliNotes\`（配置、密钥、卡片、缓存、日志） |
 | 笔记目录 | `C:\Users\86159\Documents\BiliNotes\<笔记标题>\` |
-| 当前状态 | 功能完整可用，15 个回归套件 + 2 个前端检查全绿；`dist/BiliNotes/` 通过 `tools/verify_bundle.py` **32 项验收**；`installer/dist/BiliNotes-setup-0.2.0.exe`（210.5MB）已编译 |
+| 当前状态 | 功能完整可用，29 个离线套件 / 34 项打包验收 / 17 项新机模拟 / 前后端接口契约全绿；**0.2.4 已发到 GitHub Releases**（tag `v0.2.4`，安装包 221,259,783 字节 + `SHA256SUMS.txt`），内置更新线上实跑通过 |
 
 **最近在做什么**：知识卡片 + 间隔重复 → 跨视频概念索引 → 排期规则显式化 → **卡片按范围分组复习、所有卡片浏览器、近似重复拦截**。
 
@@ -94,6 +94,44 @@ happen to / sales rep」逐条核对，配图就是它讲的那一页。
 **教训**：音画这类「看起来对不对」的改动，离线重放不能代替真跑——
 真跑会暴露选帧阶段与渲染阶段之间的耦合问题。以后改这块先跑一次真实视频。
 
+### 2026-11-10 · 0.2.4 正式发布到 GitHub（13:20）
+
+用户一句「上传吧」，把之前备齐的材料全部发上线。这是**首个对外正式 Release**。
+
+**发布内容**：`master` 领先远端的 11 个提交推到 `8754cd4`；附注标签 `v0.2.4`
+（tag 对象 `f01a8d3`）；Release `v0.2.4`（id `439970928`，非 draft / 非 prerelease / latest），
+说明用 `installer/dist/release-notes-0.2.4.md`，资产为
+`BiliNotes-setup-0.2.4.exe`（221,259,783 字节）与 `SHA256SUMS.txt`（93 字节）。
+GitHub 侧返回的资产 `digest` 是 `sha256:579defe8…a5b0`，与本地安装包一致——
+等于由 GitHub 自己复算了一次哈希，上传无损。
+发布页：https://github.com/jinmm1233/bili-notes/releases/tag/v0.2.4
+
+**新增 `tools/publish_release.py`**：从 Git Credential Manager 取 token（不落盘、
+不打印），先核对安装包 / SUMS / 说明三处哈希，再幂等地建 Release、传资产
+（同名同大小且摘要一致就跳过，否则先删再传），最后回读 latest、资产摘要、
+SUMS 内容和 `releases/download` 直链的 Range 能力。以后发版一条命令：
+`python tools/publish_release.py --proxy http://127.0.0.1:7890`。
+
+**代理坑（重要）**：本会话环境自带的 `HTTPS_PROXY=127.0.0.1:34126` 只放行
+`api.github.com`（200），对 `github.com:443` 的 CONNECT 直接 502；`git push`
+因此报 `schannel: server closed abruptly` 或 `CONNECT tunnel failed`。
+VPN 系统代理 `127.0.0.1:7890` 两条域名都通，所以推代码/传资产要显式指定：
+`git -c http.proxy=http://127.0.0.1:7890 push origin master`、
+脚本加 `--proxy http://127.0.0.1:7890`。**小请求 `api.github.com` 能通不代表
+推送和下载也能通**，别据此判断网络没问题。
+另一个细节：`requests` 经 7890 复用上传时的连接去 GET `github.com` 会
+`ProxyError(RemoteDisconnected)`，但 `curl` / `urllib` 正常；脚本的直链探测
+因此改成 urllib（也和 `app/core/updater.py` 的真实路径一致）。
+
+**线上实跑验证**（隔离的临时数据目录，不污染真实配置）：
+`app.core.updater.check(force=True)` → `ok=True`、`latest=0.2.4`、
+`has_update=False`（同版本不误报）；解析出的资产名、大小、说明内 SHA256、
+域名白名单全部正确；`_sha_from_sums()` 从线上 SUMS 读到同一个哈希；
+对 `releases/download/v0.2.4/…exe` 发 `Range: bytes=0-1023` 返回
+`206 Content-Range: bytes 0-1023/221259783`——断点续传可用。
+另外 `is_newer('0.2.4','0.2.3')` 为 True，将来发新版会正常提示。
+`tools/publish_release.py` 连跑三次均全绿，第二次起自动跳过已上传资产。
+
 ### 2026-11-10 · 0.2.4 音画锚定 + 全量体检 + 重做图标（01:00）
 
 用户诉求三件：细致做最后的检验（代码/功能/新机能否用）、换好看的图标、
@@ -135,11 +173,10 @@ happen to / sales rep」逐条核对，配图就是它讲的那一页。
 + 播放钮），<48px 画简化版（专用小图，不是从 256 缩的），输出 9 尺寸 ICO；
 网页 icon.svg / icon-192 / icon-512 同步成同一套。
 
-**五、发版状态**
-版本 0.2.4，安装包 `installer/dist/BiliNotes-setup-0.2.4.exe`（210.8MB，
-SHA256 `f93e06008af37ba14b0bdb90c36aac6f8fb6a68841c75138b8c11c72641f834c`），
-`SHA256SUMS.txt` 与 `release-notes-0.2.4.md` 已生成。
-**源码未推送**：下一步只剩 `git push` + 在 GitHub 建 tag `v0.2.4` 的 Release。
+**五、发版状态**（本节写于发布前，**最终状态以下一节为准**）
+当时安装包 `installer/dist/BiliNotes-setup-0.2.4.exe`（SHA256 `f93e…4c`），
+`SHA256SUMS.txt` 与 `release-notes-0.2.4.md` 已生成，源码尚未推送。
+之后又改了收款码与说明并重新编译，哈希已变，勿再引用上面这个值。
 
 ### 2026-11-09 · 0.2.3 内置更新绑定真实仓库（22:20）
 
