@@ -66,6 +66,15 @@ def main() -> int:
     sums = DIST / "SHA256SUMS.txt"
     sums.write_text(f"{digest}  {exe.name}\n", encoding="utf-8")
 
+    # 上一轮已经写好的「本次更新」要保留：重新生成校验文件时不该把说明清空
+    prev_updates = ""
+    prev_path = DIST / f"release-notes-{ver}.md"
+    if prev_path.is_file():
+        old_text = prev_path.read_text(encoding="utf-8")
+        m = re.search(r"### 本次更新\n\n(.*?)\n\n### 安装", old_text, re.S)
+        if m and "（把这次改了什么" not in m.group(1):
+            prev_updates = m.group(1).strip()
+
     notes = f"""## BiliNotes v{ver}
 
 Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装过的直接覆盖即可，
@@ -77,7 +86,7 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装�
 
 ### 本次更新
 
-（把这次改了什么写成短句，一行一条；删掉这行括号）
+{prev_updates or "（把这次改了什么写成短句，一行一条；删掉这行括号）"}
 
 ### 安装
 
