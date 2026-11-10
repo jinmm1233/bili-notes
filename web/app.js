@@ -3919,6 +3919,27 @@ async function cleanExampleCards() {
   $('setVisionUrl').onchange = () => persistVision().catch((e) => toast(e.message, true));
   $('btnSaveKey').onclick = () => saveKey().catch((e) => toast(e.message, true));
   $('btnClearKey').onclick = () => clearCurrentKey().catch((e) => toast(e.message, true));
+
+  // 打赏：选一个金额看收款码，再点一次收起
+  document.querySelectorAll('.donate-opt').forEach((btn) => {
+    btn.onclick = () => {
+      const box = $('donateBox'), img = $('donateImg');
+      const amount = btn.dataset.amount;
+      const picked = img.dataset.amount === amount;
+      document.querySelectorAll('.donate-opt').forEach((b) => b.classList.toggle('on', b === btn && !picked));
+      if (picked) {                       // 再点同一个 = 收起
+        box.hidden = true;
+        img.removeAttribute('src');
+        delete img.dataset.amount;
+        return;
+      }
+      img.src = `/static/donate/donate-${amount}.png`;
+      img.dataset.amount = amount;
+      const label = (btn.querySelector('em') || {}).textContent || '';
+      $('donateTip').textContent = `微信扫码支付 ¥${amount}${label ? '（' + label + '）' : ''}`;
+      box.hidden = false;
+    };
+  });
   $('btnSaveVisionKey').onclick = () => saveVisionKey().catch((e) => toast(e.message, true));
   $('btnTest').onclick = testConn;
   $('btnSaveAll').onclick = saveAll;

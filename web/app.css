@@ -1606,3 +1606,28 @@ body.sheet-mode .quiz-sheet{
   .aurora i,.brand-mark::after,.btn.primary::after{animation:none!important}
   *{transition-duration:.01ms!important}
 }
+
+/* ---------- 打赏作者：四个金额 + 收款码 ---------- */
+.donate-opts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0 2px}
+.donate-opt{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:13px 6px;border-radius:var(--radius-card);
+  border:1px solid var(--line);background:var(--card);color:var(--text);
+  font-family:inherit;cursor:pointer;transition:border-color .16s,background .16s,box-shadow .16s;
+}
+.donate-opt b{font-size:17px;font-weight:700;line-height:1.15}
+.donate-opt em{font-style:normal;font-size:11.5px;color:var(--muted)}
+.donate-opt:hover{border-color:var(--brand);background:var(--brand-soft-2)}
+.donate-opt.on{
+  border-color:var(--brand);background:var(--brand-soft);
+  box-shadow:0 4px 16px var(--brand-glow);
+}
+.donate-opt.on b{color:var(--brand-d)}
+.donate-box{margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:9px}
+.donate-box img{
+  width:min(272px,80%);border-radius:var(--radius-card);
+  box-shadow:0 10px 30px rgba(0,0,0,.16);background:#fff;
+}
+@media (max-width:560px){
+  .donate-opts{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
