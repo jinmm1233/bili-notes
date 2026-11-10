@@ -66,16 +66,22 @@ def main() -> int:
     sums = DIST / "SHA256SUMS.txt"
     sums.write_text(f"{digest}  {exe.name}\n", encoding="utf-8")
 
-    # 上一轮已经写好的「本次更新」要保留：重新生成校验文件时不该把说明清空
-    prev_updates = ""
-    prev_path = DIST / f"release-notes-{ver}.md"
-    if prev_path.is_file():
-        old_text = prev_path.read_text(encoding="utf-8")
-        m = re.search(r"### 本次更新\n\n(.*?)\n\n### 安装", old_text, re.S)
-        if m and "（把这次改了什么" not in m.group(1):
-            prev_updates = m.group(1).strip()
-
-    notes = f"""## BiliNotes v{ver}
+    # 说明正文由人写，docs/ 下那份是版本库正本；重跑本脚本只同步元数据
+    # （哈希、体积、安装包名），不该把产品介绍或本次更新的正文冲掉。
+    docs_path = ROOT / "docs" / f"release-notes-{ver}.md"
+    notes_path = DIST / f"release-notes-{ver}.md"
+    prev = ""
+    for p in (docs_path, notes_path):        # 正本优先，dist 里的旧稿兜底
+        if p.is_file():
+            prev = p.read_text(encoding="utf-8")
+            break
+    if prev and "（把这次改了什么" not in prev:
+        notes = re.sub(r"\b[0-9a-f]{64}\b", digest, prev)
+        notes = re.sub(r"- 大小：.*",
+                       f"- 大小：{size / 1024 / 1024:.1f} MB（{size} 字节）", notes)
+        notes = re.sub(r"BiliNotes-setup-[0-9.]+\.exe", exe.name, notes)
+    else:
+        notes = f"""## BiliNotes v{ver}
 
 Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装过的直接覆盖即可，
 笔记、设置、单词本都会保留。
@@ -86,7 +92,7 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装�
 
 ### 本次更新
 
-{prev_updates or "（把这次改了什么写成短句，一行一条；删掉这行括号）"}
+（把这次改了什么写成短句，一行一条；删掉这行括号）
 
 ### 安装
 
@@ -99,7 +105,7 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装�
 `SHA256SUMS.txt` 会作为资产一起上传，程序下载完会自动比对；
 上面的 SHA256 也写了同一份值，两种来源任取其一都能通过。
 """
-    notes_path = DIST / f"release-notes-{ver}.md"
+    docs_path.write_text(notes, encoding="utf-8")
     notes_path.write_text(notes, encoding="utf-8")
 
     print(f"版本      {ver}")
@@ -107,7 +113,8 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库。已装�
     print(f"大小      {size / 1024 / 1024:.1f} MB")
     print(f"SHA256    {digest}")
     print(f"已生成    {sums}")
-    print(f"已生成    {notes_path}")
+    print(f"说明正本  {docs_path}")
+    print(f"已同步    {notes_path}")
     print("\n建 Release 时：tag 填 v%s，把这两个文件拖进资产区：" % ver)
     print(f"  1. {exe.name}")
     print(f"  2. {sums.name}")

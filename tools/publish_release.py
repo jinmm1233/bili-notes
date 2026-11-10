@@ -103,6 +103,8 @@ def main() -> int:
     ap.add_argument("--proxy", help="显式代理，如 http://127.0.0.1:7890")
     ap.add_argument("--no-proxy", action="store_true", help="忽略环境里的代理设置，直连")
     ap.add_argument("--upload-only", action="store_true", help="只补传资产，不改 Release 说明")
+    ap.add_argument("--update-notes", action="store_true",
+                    help="已发布的 Release 也用本地说明覆盖描述（改文案时用）")
     args = ap.parse_args()
 
     ver = args.version or current_version()
@@ -112,7 +114,9 @@ def main() -> int:
 
     exe = DIST / f"BiliNotes-setup-{ver}.exe"
     sums = DIST / "SHA256SUMS.txt"
-    notes_path = DIST / f"release-notes-{ver}.md"
+    # 说明正本在 docs/（进版本库），dist 里那份是发版用的同步副本
+    docs_notes = ROOT / "docs" / f"release-notes-{ver}.md"
+    notes_path = docs_notes if docs_notes.is_file() else DIST / f"release-notes-{ver}.md"
     for p in (exe, sums, notes_path):
         if not p.is_file():
             raise SystemExit(f"缺文件：{p}")
@@ -140,8 +144,10 @@ def main() -> int:
         patch = {}
         if rel.get("draft"):
             patch["draft"] = False
-        if not args.upload_only and not str(rel.get("body") or "").strip():
-            patch["body"] = notes
+        if not args.upload_only:
+            body = str(rel.get("body") or "").strip()
+            if not body or (args.update_notes and body != notes.strip()):
+                patch["body"] = notes
         if patch:
             rel = gh.api("PATCH", f"{base}/{rel['id']}", json=patch)
             print(f"  已更新：{', '.join(patch)}")
