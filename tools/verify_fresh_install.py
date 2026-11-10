@@ -292,17 +292,42 @@ def main() -> int:
                    f"读到 {len(secret_values)} 个密钥")
 
         # ---- 11b. 源码里没有指向本机的绝对路径（真机必须能跑）----
-        # 写死 C:\Users\86159\... 的路径，换台电脑就全废了。
+        # 写死 C:\Users\xxx\... 的路径，换台电脑就全废了。
+        # 连**打包机的用户名**都不能漏出去：.pyc 里记着编译时的源码绝对路径。
         hardcode = []
+        build_user = os.environ.get("USERNAME", "")
         for path in (dist / "_internal" / "app").rglob("*.py"):
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            for m in re.finditer(r"[A-Za-z]:\\\\?Users\\\\?[^\\\\\"'\s]{1,40}", text):
+            for m in re.finditer(r"[A-Za-z]:\\Users\\[^\\\"'\s]{1,40}", text):
                 hardcode.append(f"{path.name}: {m.group(0)[:40]}")
         record(not hardcode, "包内代码没有写死本机用户目录",
                f"{len(hardcode)} 处" + (f"：{hardcode[:2]}" if hardcode else ""))
+
+        # 全包扫一遍打包机用户名。只查**我们自己的代码**（app/ 与 vendor/）：
+        # 第三方库的 dist-info/RECORD、licenses 里的 .pyc 是它们自己打包时就带的
+        # 构建痕迹（attrs / websockets / av 等），不是我们能控制的，也不影响运行。
+        leaked = []
+        if build_user:
+            for top in ("app", "vendor"):
+                base = dist / "_internal" / top
+                if not base.is_dir():
+                    continue
+                for path in base.rglob("*"):
+                    if not path.is_file() or path.suffix.lower() in (
+                            ".exe", ".dll", ".pyd", ".png", ".jpg", ".ico",
+                            ".bin", ".pma"):
+                        continue
+                    try:
+                        data = path.read_bytes()
+                    except OSError:
+                        continue
+                    if build_user.encode() in data:
+                        leaked.append(str(path.relative_to(dist)))
+        record(not leaked, "安装产物里没有打包机的用户名",
+               f"{len(leaked)} 个文件" + (f"：{leaked[:3]}" if leaked else ""))
 
         # ---- 12. 没有污染用户真实目录（跑之前先拍快照）----
         # edge-profile/ 是 Edge 浏览器自己的缓存目录，不是 BiliNotes 的数据；

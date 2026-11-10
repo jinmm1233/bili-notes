@@ -123,6 +123,33 @@ def run() -> int:
                detailed.scene_phash_distance}) == 1,
           "三档画面判定阈值一致")
 
+    # ---- 6. Word 导出链路（vendor/ 里的四个库）----
+    # 这几个库装在 vendor/ 而不是 site-packages，靠 app/__init__.py 把 vendor
+    # 加进 sys.path 才能用。打包时如果 vendor 目录出问题（曾因剔 __pycache__
+    # 改过目录结构），Word 导出就会在用户机器上才炸——这里提前验。
+    try:
+        import lxml.etree as _etree
+        check(hasattr(_etree, "LXML_VERSION"), "vendor: lxml 可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"vendor: lxml 导入失败（{type(exc).__name__}）")
+    try:
+        from latex2mathml.converter import convert as _conv
+        check(bool(_conv("x^2")), "vendor: latex2mathml 可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"vendor: latex2mathml 导入失败（{type(exc).__name__}）")
+    try:
+        from docx import Document as _Doc
+        _d = _Doc()
+        _d.add_paragraph("自检")
+        check(True, "vendor: python-docx 可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"vendor: python-docx 导入失败（{type(exc).__name__}）")
+    try:
+        import mathml2omml as _m2o
+        check(hasattr(_m2o, "convert"), "vendor: mathml2omml 可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"vendor: mathml2omml 导入失败（{type(exc).__name__}）")
+
     lines.append(f"\n{'全部通过' if not failed else f'{failed} 项失败'}")
     _report(lines)
     return 0 if not failed else 1

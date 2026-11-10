@@ -28,9 +28,25 @@ if web_dir.is_dir():
 
 # 导出 Word 用的第三方库（python-docx / lxml / latex2mathml / mathml2omml）放在 vendor/，
 # 整个目录随包分发；app/__init__.py 会把 <_MEIPASS>/vendor 加进 sys.path。
+#
+# 必须剔掉 __pycache__：.pyc 里记着**编译时的源码绝对路径**（含打包机的用户名），
+# 打进安装包等于把构建者的用户名发给每个用户。实测能扫出 135 处 C:\Users\86159。
+# 剔掉不影响运行——冻结环境有源码缓存，不需要带旧的 .pyc。
+#
+# 做法是**复制一份干净的**再打包，不动源目录（别在打包时改工作区）。
 vendor_dir = ROOT / "vendor"
 if vendor_dir.is_dir():
-    datas.append((str(vendor_dir), "vendor"))
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    _clean = Path(_tempfile.mkdtemp(prefix="bn_vendor_")) / "vendor"
+    _shutil.copytree(
+        str(vendor_dir), str(_clean),
+        ignore=_shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    _left = sum(1 for _ in _clean.rglob("*.pyc"))
+    print(f"[vendor] 干净副本已备好（残留 .pyc { _left } 个），原目录不动")
+    datas.append((str(_clean), "vendor"))
 
 # ffmpeg / ffprobe：放 bin/ 下随包分发，目标机无需安装
 bin_dir = ROOT / "bin"
