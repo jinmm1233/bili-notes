@@ -6,12 +6,13 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:8765"
+BASE = os.environ.get("BILINOTES_UI_BASE", "http://127.0.0.1:8765")
 OUT = Path(__file__).resolve().parents[1] / ".screens"
 FAILED = 0
 
@@ -49,6 +50,22 @@ def main() -> int:
 
         opts = page.locator(".donate-opt")
         ok(opts.count() == 4, f"四个金额按钮（实际 {opts.count()}）")
+
+        # 文案：开头只留一句，别再长篇解释
+        intro = page.locator(".donate-panel > p.hint").first.inner_text().strip()
+        ok("如果这工具对你有用，欢迎请作者喝杯东西" in intro, f"开头一句文案（{intro}）")
+        ok("白嫖" not in intro and "一个人做的" not in intro, "开头没有多余说明")
+
+        # 布局：打赏填进「关于」右边那块空白，与它同一行
+        about = page.locator(".settings-grid .panel",
+                             has=page.locator(".panel-title", has_text="关于"))
+        ab, db = about.bounding_box(), page.locator(".donate-panel").bounding_box()
+        ok(bool(ab and db), "两块面板都能定位到")
+        if ab and db:
+            ok(db["x"] > ab["x"] + ab["width"] * 0.7, "打赏面板在右列")
+            ok(abs(db["y"] - ab["y"]) < 20, "与「关于」同一行（不是另起一整行）")
+        ys = [round(opts.nth(i).bounding_box()["y"]) for i in range(4)]
+        ok(len(set(ys)) == 2, f"窄列里四个金额排 2×2（行 y={sorted(set(ys))}）")
         labels = [opts.nth(i).inner_text().replace("\n", " ") for i in range(opts.count())]
         print("  按钮：", labels)
         for want in ("3.33", "6.66", "8.88", "16.88"):
@@ -77,7 +94,8 @@ def main() -> int:
         page.locator("#donateBox").scroll_into_view_if_needed()
         page.wait_for_timeout(400)
         page.screenshot(path=str(OUT / "settings_donate.png"))
-        print(f"  截图：{OUT / 'settings_donate.png'}")
+        page.screenshot(path=str(OUT / "settings_donate_full.png"), full_page=True)
+        print(f"  截图：{OUT / 'settings_donate.png'} / settings_donate_full.png")
 
         opts.nth(3).click()                      # 再点一次收起
         page.wait_for_timeout(500)
