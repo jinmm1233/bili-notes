@@ -22,6 +22,12 @@ from .chunking import bigrams
 
 log = logging.getLogger(__name__)
 
+# 感知哈希距离小于这个值算「同一张画面」，只留一张。
+# 8 太宽了：相邻两页 PPT 只改几个字就会被判成同一张，
+# 于是后一页配不到图，讲它的要点只能去蹭前一张（实测 12 处）。
+# 4 只把几乎完全相同的画面算重复，模板相近的两页各留一张。
+_DUP_DISTANCE = 4
+
 _CUE_PATTERNS = ("看这里", "这个图", "如图所示", "这张图", "看这个", "公式", "代码",
                  "这个表", "示意图", "流程图", "架构图", "我们看", "请注意")
 
@@ -309,7 +315,8 @@ def score_and_select(
     if not frames:
         return []
 
-    must_keep = must_keep or set()
+    keep_counts = must_keep if isinstance(must_keep, dict) else {}
+    must_keep = set(keep_counts) if keep_counts else set(must_keep or ())
     chunk_of = _chunk_index_map(chunks, frames)
     max_sharp = max((f.sharpness for f in frames), default=1.0) or 1.0
 
@@ -340,20 +347,38 @@ def score_and_select(
     selected: list[Frame] = []
     per_chunk_count: dict[int, int] = {}
 
-    for frame in ordered:
+    def take(frame: Frame) -> bool:
         # 0 = 不限：详细档靠这个把画面全部留下，不再被固定配额砍掉
         if settings.max_frames_total and len(selected) >= settings.max_frames_total:
-            break
+            return False
         if frame.score < 0.08:
-            continue
+            return False
         idx = chunk_of.get(id(frame), 0)
         if (settings.max_frames_per_chunk
                 and per_chunk_count.get(idx, 0) >= settings.max_frames_per_chunk):
-            continue
-        if any(_hamming(frame.phash, s.phash) < 8 for s in selected if frame.phash and s.phash):
-            continue
+            return False
+        if any(_hamming(frame.phash, s.phash) < _DUP_DISTANCE
+               for s in selected if frame.phash and s.phash):
+            return False
         selected.append(frame)
         per_chunk_count[idx] = per_chunk_count.get(idx, 0) + 1
+        return True
+
+    # 第一轮：讲解指着的那几张先入座。
+    # 同一页 PPT 的几帧 phash 几乎一样，谁先入选另一张就被去重挤掉——
+    # 结果是「标 03:28 的要点」上面贴着同页 03:44 的图（真跑过一轮才发现）。
+    # 讲得最多的那张优先，同页其它帧再靠分数补。
+    keep = [f for f in ordered if f.path in must_keep]
+    # 讲得最多的那张优先（同一页被讲得越多，这张越有代表性），其次按时间
+    keep.sort(key=lambda f: (-keep_counts.get(f.path, 0), f.ts))
+    for frame in keep:
+        take(frame)
+
+    # 第二轮：其余帧按信息量补
+    for frame in ordered:
+        if frame.path in must_keep:
+            continue
+        take(frame)
 
     # 新颖度回填：与最终入选集合的相似度越低越新颖
     for frame in selected:
@@ -527,6 +552,13 @@ def _hamming(a: str, b: str) -> int:
     if not a or not b or len(a) != len(b):
         return 64
     try:
-        return bin(int(a, 16) ^ int(b, 16)).count("1")
+        va, vb = int(a, 16), int(b, 16)
     except ValueError:
         return 64
+    # 感知哈希几乎没有有效位 = 画面里没有可区分特征（纯色、黑屏、纯白，
+    # 它们的 phash 都是 8000000000000000）。这种帧两两距离都是 0，
+    # 判成「重复」会把不同画面全丢掉，所以按「完全不同」处理，
+    # 让它们走正常的分数排序与配额淘汰。
+    if bin(va).count("1") < 4 or bin(vb).count("1") < 4:
+        return 64
+    return bin(va ^ vb).count("1")

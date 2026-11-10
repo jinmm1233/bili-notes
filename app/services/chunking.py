@@ -42,16 +42,28 @@ def build_chunks(
     max_chars: int = 1200,
     min_chars: int = 120,
     scene_bounds: list[float] | None = None,
+    max_scene_spans: int = 0,
 ) -> list[Chunk]:
     """按语义切块；接近目标长度时优先在画面切换处断开。
 
     scene_bounds 是画面停留段的结束时间。只把切点往这些边界上靠，
     不改变三档共用的判定标准，也不额外增加块数（门槛是 target 的八成）。
+
+    max_scene_spans 是「每块最多讲几页画面」（0 = 不限，取每段图片上限）。
+    为什么要有：一段里博主讲了 12 页 PPT，而这段只允许配 8 张图，
+    必然有 4 页配不到图——那条要点就找不到对应画面。宁可多切一块，
+    也要保证「讲过的每一页都有图」。切分仍按画面边界，不打乱语义。
     """
     if not segments:
         return []
 
     bounds = sorted(scene_bounds or [])
+
+    def scene_count(start: float, end: float) -> int:
+        """区间里换过几次画面。"""
+        if not bounds:
+            return 0
+        return bisect.bisect_right(bounds, end) - bisect.bisect_left(bounds, start)
 
     def crosses_scene_bound(last_end: float, seg: Segment) -> bool:
         """上一句到这一句之间是否换过画面。
@@ -90,6 +102,11 @@ def build_chunks(
     for seg in segments:
         last_end = prev_end
         gap = seg.start - last_end
+        # 加这句之前先看画面页数：再跨一页这块就超了，先切开。
+        # 判断放在 append 之前——等超限了才切，切出来的块照样超限。
+        if (max_scene_spans and buf
+                and scene_count(buf[0].start, seg.start) >= max_scene_spans):
+            flush()
         buf.append(seg)
         buf_len += len(seg.text)
         prev_end = seg.end
@@ -102,6 +119,8 @@ def build_chunks(
             continue
         if buf_len >= target * 0.8 and crosses_scene_bound(last_end, seg):
             flush()
+            continue
+
 
     flush()
 

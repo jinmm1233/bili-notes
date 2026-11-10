@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core.llm import parse_json_loose  # noqa: E402
 from app.core.models import Chapter, Chunk, Frame, Segment, VideoMeta  # noqa: E402
 from app.services import chunking, exporter, mindmap, subtitle  # noqa: E402
 
@@ -116,6 +117,17 @@ def main() -> int:
     check("画面文字" in md, "OCR 文字入正文")
     check("<details>" in md, "转录折叠")
     check("t=125" in md, "时间戳跳转链接")
+
+    # 模型输出被 max_tokens 截断时，要保住已完成的那部分而不是整批丢掉
+    print("\n  JSON 容错")
+    d1 = parse_json_loose('{"captions": [{"index": 1, "title": "T", "points": ["a", "b"')
+    check(bool(d1.get("captions")), "截断在数组中间也能解析出已完成部分")
+    d2 = parse_json_loose('{"bullets": ["要点1", "要点2"')
+    check(d2.get("bullets") == ["要点1", "要点2"], "截断在数组末尾也能解析")
+    d3 = parse_json_loose('{"a": 1, "b": "没写完')
+    check(d3.get("a") == 1 and "b" not in d3, "截断在字符串里会丢掉那个键")
+    check(parse_json_loose('```json\n{"ok": true}\n```').get("ok") is True, "带围栏能解析")
+    check(parse_json_loose("完全不是 JSON") == {}, "垃圾输入返回空结构")
 
     out = Path(__file__).parent / "_sample_output.md"
     out.write_text(md, encoding="utf-8")

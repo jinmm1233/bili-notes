@@ -259,7 +259,51 @@ def scene_bounds(frames: list[Frame]) -> list[float]:
 
 def must_keep_paths(chunks: list[Chunk]) -> set[str]:
     """被讲解指着的那些画面帧，打分时优先保留。"""
-    return {a.frame_path for c in chunks for a in c.anchors if a.frame_path}
+    return set(must_keep_counts(chunks))
+
+
+def must_keep_counts(chunks: list[Chunk]) -> dict[str, int]:
+    """每张「被讲解指着」的帧被指向了几次——讲得最多的那张最有代表性。"""
+    counts: dict[str, int] = {}
+    for c in chunks:
+        for a in c.anchors:
+            if a.frame_path:
+                counts[a.frame_path] = counts.get(a.frame_path, 0) + 1
+    return counts
+
+
+def reconcile_anchors(chunks: list[Chunk], selected: list[Frame]) -> int:
+    """选帧之后，把锚点改指到「最终入选的那一张」，返回改了多少个。
+
+    同一页 PPT 的几帧感知哈希几乎一样，选帧去重时只会留一张——而锚点还指着
+    被去重掉的那张。配图按 ±8 秒找就找不到（实测差到 38 秒），要点只好去蹭
+    上一条的图，视觉上就成了张冠李戴。
+
+    锚定的语义本来就是「哪一页」而不是「哪一秒」：同一页里讲的每一句，
+    对应的画面内容是同一张。这里把锚点挪到同页入选的那张上，配图就一定能
+    找到，而且找到的确实是它讲的那一页。
+    """
+    by_span: dict[tuple[float, float], list[Frame]] = {}
+    for f in selected:
+        if f.seg_end > f.seg_start:
+            by_span.setdefault((round(f.seg_start, 2), round(f.seg_end, 2)), []).append(f)
+
+    moved = 0
+    for chunk in chunks:
+        for a in chunk.anchors:
+            if a.frame_ts <= 0:
+                continue
+            pool = by_span.get((round(a.span_start, 2), round(a.span_end, 2)), [])
+            if not pool:
+                continue
+            best = min(pool, key=lambda f: abs(f.ts - a.frame_ts))
+            if abs(best.ts - a.frame_ts) > 0.01:
+                a.frame_ts = best.ts
+                a.frame_path = best.path
+                moved += 1
+    if moved:
+        log.info("锚点对齐到入选帧：%d 处", moved)
+    return moved
 
 
 def refresh_screens(chunks: list[Chunk]) -> None:

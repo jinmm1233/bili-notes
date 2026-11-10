@@ -323,6 +323,41 @@ class LLMClient:
         return parse_json_loose(raw)
 
 
+def _close_truncated(text: str) -> str:
+    """把被 max_tokens 截断的 JSON 补到能解析。
+
+    模型输出到一半被截断时（例如画面要点里 points 数组写到第三条就停了），
+    直接解析会失败，整批结果全丢——只能保住已完成的那部分。
+    这里补齐缺失的括号、去掉末尾没写完的字符串。
+    """
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]" and stack:
+            stack.pop()
+    if in_str:                       # 末尾是半截字符串，砍掉
+        cut = text.rfind('"')
+        if cut > 0:
+            text = text[:cut]
+        text = text.rstrip().rstrip(",")
+        # 砍完可能剩个悬空的 "key": ，一并去掉
+        text = re.sub(r',?\s*"[^"]*"\s*:\s*$', "", text).rstrip().rstrip(",")
+    return text + "".join("}" if c == "{" else "]" for c in reversed(stack))
+
+
 def parse_json_loose(raw: str) -> dict[str, Any]:
     """模型常把 JSON 包在 ```json 里或前后加解释，这里做容错提取。"""
     text = raw.strip()
@@ -340,6 +375,17 @@ def parse_json_loose(raw: str) -> dict[str, Any]:
         try:
             data = json.loads(match.group(0))
             return data if isinstance(data, dict) else {"data": data}
+        except json.JSONDecodeError:
+            pass
+
+    # 被截断：补齐括号再试一次，保住已完成的那部分
+    repaired = _close_truncated(text)
+    if repaired != text:
+        try:
+            data = json.loads(repaired)
+            if isinstance(data, dict) and data:
+                log.warning("JSON 被截断，已按已完成部分解析：%s", text[:120])
+                return data
         except json.JSONDecodeError:
             pass
     log.warning("JSON 解析失败，返回空结构：%s", text[:120])

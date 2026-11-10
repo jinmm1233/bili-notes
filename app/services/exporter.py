@@ -40,6 +40,9 @@ def export(
     for chapter in note.chapters:
         for idx in chapter.chunk_indexes:
             all_frames.extend(note.chunks[idx].frames)
+    if not all_frames:
+        # 没有章节时也要把关键帧带出去，否则整篇笔记一张图都没有
+        all_frames = [f for c in note.chunks for f in c.frames]
     seen: set[str] = set()
     for i, frame in enumerate(all_frames, 1):
         if frame.path in seen:
@@ -379,21 +382,6 @@ def _item_line(note: VideoNote, text: str, ts: float) -> str:
     return f"- {text}　<sub>`{stamp}`</sub>"
 
 
-def _group_items_by_ts(
-    items: list[str], times: list[float], join_gap: float = 8.0,
-) -> list[tuple[float, list[str]]]:
-    """把要点按「讲的是哪一帧」分组，相邻同一画面的合在一起配一张图。"""
-    groups: list[tuple[float, list[str]]] = []
-    for text, ts in zip(items, times):
-        if groups and ts > 0 and abs(ts - groups[-1][0]) <= join_gap:
-            groups[-1][1].append(text)
-        elif groups and ts <= 0:
-            groups[-1][1].append(text)
-        else:
-            groups.append((ts, [text]))
-    return groups
-
-
 def _screen_block(frame: Frame) -> list[str]:
     """一张画面的「画面要点」块（blockquote 行，首行是标题，后跟要点列表）。
 
@@ -479,13 +467,18 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
             anchored = len(times) == len(items) and any(t > 0 for t in times)
 
             if anchored:
-                # 每条要点带着它讲的真实画面时刻：同一帧的要点合一组、配一张图，
-                # 换到下一帧就换图。这样「定语后置」配的是它讲的那张卡。
-                for ts, texts in _group_items_by_ts(items, times):
-                    lines.extend(_render_shot(
-                        note, shot({"ts": ts}), with_caption=False
-                    ))
-                    for text in texts:
+                # 每条要点按**自己**的时刻找画面：这一帧没被选进笔记就不给图，
+                # 也不让这条要点去蹭上一条的图——蹭了就成了张冠李戴
+                # （真跑过一轮：标 03:28 的「well-dressed」上面贴着 03:04 的图）。
+                for text, ts in zip(items, times):
+                    result = shot({"ts": ts})
+                    if result:
+                        frame = result[0]
+                        lines.extend(_render_shot(note, result, with_caption=False))
+                        # 时间码用这张图的时间：点一下正好落在它讲的那一页上，
+                        # 图和时间码说的是同一件事，不会出现「图 03:44、码 03:49」
+                        lines.append(_item_line(note, text, frame.ts))
+                    else:
                         lines.append(_item_line(note, text, ts))
                     lines.append("")
             else:

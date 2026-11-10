@@ -135,6 +135,8 @@ class Pipeline:
             max_chars=self.settings.chunk_max_chars,
             scene_bounds=anchors_mod.bounds_from_spans(self._scene_spans)
             or anchors_mod.scene_bounds(sampled),
+            # 一块里讲过的画面页数不超过该段的图片上限：保证每页都配得到图
+            max_scene_spans=self.settings.max_frames_per_chunk,
         )
         if not chunks and sampled:
             # 没有语音（无音轨 / 只有配乐 / 人声太轻）时转写会是 0 句。
@@ -653,10 +655,12 @@ class Pipeline:
                 chunks, segments, pooled, meta.duration,
                 spans=self._scene_spans,
             )
-            must_keep = anchors_mod.must_keep_paths(chunks)
+            must_keep = anchors_mod.must_keep_counts(chunks)
             selected = frames_mod.score_and_select(
                 self.settings, pooled, chunks, must_keep=must_keep
             )
+            # 同页只留一张时，锚点要改指到入选的那张（语义是「哪一页」）
+            anchors_mod.reconcile_anchors(chunks, selected)
 
             # 低清候选只负责定位，进笔记的这几十张换成原画质
             if selected and self.settings.hd_frames:

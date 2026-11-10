@@ -271,7 +271,13 @@ def snap_anchor_ts(ts: float, chunks: list[Chunk], tol: float = 15.0) -> float:
     if not times:
         return ts
     best = min(times, key=lambda t: abs(t - ts))
-    return best if abs(best - ts) <= tol else ts
+    if abs(best - ts) <= tol:
+        return best
+    # 那一页可能因为和邻页太像被去重掉了（没帧入选），这时退到时间上
+    # 最近的有图页：视觉上是内容相近的那一页，宁可时间码靠近它，
+    # 也不要让要点去蹭一张不相干的图。
+    near = min(anchors, key=lambda a: abs(a.frame_ts - ts))
+    return near.frame_ts if abs(near.frame_ts - ts) <= tol * 2 else ts
 
 
 def _infer_item_times(items: list[str], chunks: list[Chunk]) -> list[float]:

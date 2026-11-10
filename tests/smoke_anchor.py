@@ -201,6 +201,116 @@ def test_material_budget() -> None:
     ok("【讲解】" in material and "【画面】" in material, "压缩后仍区分画面与口播")
 
 
+def test_must_keep_wins() -> None:
+    """同一页的几帧 phash 一样：讲解指着的那张必须入选，不能被同页另一帧挤掉。
+
+    真跑过一轮才发现的坑：91 个锚点里 85 个指向的帧没进笔记，
+    笔记里就出现「标 03:28 的要点」上面贴着同页 03:44 的图。
+    """
+    import shutil
+    import tempfile
+
+    from app.core.config import Settings
+    from app.services import frames as F
+
+    def slide(lines: list[tuple[int, int, int, int]]) -> Image.Image:
+        """画一张有内容的 PPT 页：白底 + 几条深色横线（phash 要有特征）。"""
+        img = Image.new("RGB", (160, 120), (250, 250, 248))
+        from PIL import ImageDraw
+        d = ImageDraw.Draw(img)
+        for x0, y0, x1, y1 in lines:
+            d.rectangle((x0, y0, x1, y1), fill=(40, 60, 120))
+        return img
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        same = root / "same.jpg"
+        slide([(12, 16, 120, 28), (12, 40, 140, 48), (12, 60, 100, 68)]).save(same)
+        pages = []
+        for i in range(3):                    # 同一页 PPT 的三帧：内容一样、路径不同
+            dst = root / f"page{i}.jpg"
+            shutil.copy(same, dst)
+            pages.append(dst)
+        other = root / "other.jpg"
+        slide([(20, 20, 150, 34), (20, 70, 60, 78), (100, 70, 150, 78)]).save(other)
+
+        frames = [
+            Frame(ts=10.0, path=str(pages[0]), origin="scene", ocr_text="同一页", text_density=0.6),
+            Frame(ts=20.0, path=str(pages[1]), origin="scene", ocr_text="同一页", text_density=0.6),
+            Frame(ts=30.0, path=str(pages[2]), origin="scene", ocr_text="同一页", text_density=0.6),
+            Frame(ts=40.0, path=str(other), origin="scene", ocr_text="另一页", text_density=0.6),
+        ]
+        chunk = Chunk(index=0, start=0.0, end=60.0, text="讲这一页")
+        selected = F.score_and_select(
+            Settings(note_detail="standard"), frames, [chunk],
+            must_keep={str(pages[1]): 3},
+        )
+        paths = [f.path for f in selected]
+        ok(str(pages[1]) in paths, "讲解指着的那张入选了")
+        ok(str(pages[0]) not in paths, "同页的其它帧被去重（不会重复贴同一页）")
+        ok(str(other) in paths, "别的页照常入选")
+
+        # 纯色画面（phash 只有一个有效位）两两距离为 0，
+        # 判成「重复」会把不同画面全丢掉——这里必须视为不可比
+        ok(F._hamming("8000000000000000", "8000000000000000") == 64,
+           "纯色画面的 phash 不被判成彼此重复")
+        ok(F._hamming("0000000000000000", "0000000000000001") == 64,
+           "空 phash 也不被判成重复")
+        ok(F._hamming("ffffffffffffffff", "0000000000000000") == 64,
+           "信息量悬殊时按不可比处理")
+
+
+def test_reconcile_anchors() -> None:
+    """同页只留一张时，锚点要改指到入选的那张，配图才找得到。"""
+    chunks = [Chunk(index=0, start=0.0, end=100.0, text="讲这一页")]
+    chunks[0].anchors = [
+        Anchor(start=10.0, end=20.0, frame_ts=18.0, frame_path="low18.jpg",
+               span_start=10.0, span_end=30.0, speech="这一页上的讲解"),
+    ]
+    # 最终入选的是同一页的另一张（22 秒那张），18 秒那张被同页去重掉了
+    selected = [Frame(ts=22.0, path="hd22.jpg", origin="scene",
+                       seg_start=10.0, seg_end=30.0)]
+    moved = A.reconcile_anchors(chunks, selected)
+    ok(moved == 1, f"锚点被挪到入选帧（挪了 {moved} 处）")
+    ok(chunks[0].anchors[0].frame_ts == 22.0,
+       f"锚点时间 = 入选帧时间（{chunks[0].anchors[0].frame_ts}）")
+    ok(chunks[0].anchors[0].frame_path == "hd22.jpg", "锚点路径也跟着更新")
+
+    # 这一页没有任何帧入选时，锚点保持原样（配图找不到就不给图，不乱指）
+    other = [Chunk(index=1, start=100.0, end=200.0, text="另一页")]
+    other[0].anchors = [Anchor(start=110.0, end=120.0, frame_ts=115.0,
+                               frame_path="low115.jpg",
+                               span_start=110.0, span_end=130.0)]
+    moved2 = A.reconcile_anchors(other, [])
+    ok(moved2 == 0 and other[0].anchors[0].frame_ts == 115.0,
+       "这一页没帧入选时锚点保持原样")
+
+
+def test_chunk_by_scene_spans() -> None:
+    """一块里讲的画面页数超过每段上限时要切开，否则那些页配不到图。"""
+    bounds = [30.0, 60.0, 90.0, 120.0]          # 全片四页
+    segments = [
+        Segment(start=i * 30.0, end=i * 30.0 + 25.0, text=f"第{i}页讲的内容", source="asr")
+        for i in range(4)
+    ]
+    # 目标长度故意放很大，只让「画面页数」这条规则起作用
+    chunks = chunking.build_chunks(
+        segments, target=100000, max_chars=100000, min_chars=1,
+        scene_bounds=bounds, max_scene_spans=2,
+    )
+    ok(len(chunks) >= 2, f"页数超限时切成了多块（{len(chunks)} 块）")
+    for c in chunks:
+        pages = sum(1 for b in bounds if c.start < b <= c.end)
+        ok(pages <= 2, f"块 {c.index} 只含 {pages} 页画面（≤2）")
+
+    # 不传上限时行为不变（详细档：不限）
+    chunks2 = chunking.build_chunks(
+        segments, target=100000, max_chars=100000, min_chars=1,
+        scene_bounds=bounds, max_scene_spans=0,
+    )
+    ok(len(chunks2) <= len(chunks), "不限页数时不会切得更碎")
+
+
 def test_summarize_chunks(chunks: list[Chunk]) -> None:
     """逐块总结不能 KeyError（模板换了字段），且要点带真实帧时间。"""
     # 只测第一块，避免假回复数量对不上
@@ -330,6 +440,9 @@ def main() -> int:
     chunks, _ = test_anchors(frames)
     test_ts_utils(chunks)
     test_material_budget()
+    test_must_keep_wins()
+    test_reconcile_anchors()
+    test_chunk_by_scene_spans()
     test_summarize_chunks(chunks)
     outline = test_build_outline(chunks)
     test_fallback_item_ts(chunks)
