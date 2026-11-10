@@ -91,22 +91,19 @@ begin
 end;
 
 // 程序在跑就不能装/卸：exe 被占用会装一半失败，用户只看到一个错误框。
-// 坑：Edge --app 窗口的标题取自网页 <title>（"BiliNotes · B站视频知识库"），
-// 不是 'BiliNotes'，FindWindowByWindowName 是精确匹配，只写 'BiliNotes' 永远拦不住。
-// 所以两个标题都认，再兜一层进程检测——以后前端改标题也不会漏。
+// 坑（实测）：Inno 6.7 的 FindWindowByWindowName 对含中文的标题会返回
+// 乱七八糟的非 0 值（查不存在的 "BiliNotes · B站视频知识库" 返回 202050），
+// 带着它就永远误判成「正在运行」，静默安装会卡在那个框上。
+// 只信 tasklist（查 BiliNotes.exe 进程），实测准确。
 function BiliNotesIsRunning(): Boolean;
 var
   Code: Integer;
 begin
-  Result := (FindWindowByWindowName('BiliNotes') <> 0) or
-            (FindWindowByWindowName('BiliNotes · B站视频知识库') <> 0);
-  if not Result then
-  begin
-    if Exec(ExpandConstant('{sys}\cmd.exe'),
-            '/c tasklist /FI "IMAGENAME eq BiliNotes.exe" /NH | find /I "BiliNotes.exe" > NUL',
-            '', SW_HIDE, ewWaitUntilTerminated, Code) then
-      Result := (Code = 0);
-  end;
+  Result := False;
+  if Exec(ExpandConstant('{sys}\cmd.exe'),
+          '/c tasklist /FI "IMAGENAME eq BiliNotes.exe" /NH | find /I "BiliNotes.exe" > NUL',
+          '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := (Code = 0);
 end;
 
 function InitializeSetup(): Boolean;
