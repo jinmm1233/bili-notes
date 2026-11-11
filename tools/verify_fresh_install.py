@@ -163,7 +163,9 @@ def main() -> int:
         second = subprocess.Popen([str(exe)], env=env, cwd=str(dist),
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                   creationflags=NO_WINDOW)
-        time.sleep(6)
+        # 等 12 秒而不是 6 秒：app/main.py 自己允许 8 秒的「抢锁 → 探测已有实例」重试窗口，
+        # 测试等得比它短就会误判成「没退出」（实测踩过一次）。
+        time.sleep(12)
         record(second.poll() is not None, "第二个实例自行退出（单实例生效）",
                f"poll={second.poll()}")
         if second.poll() is None:
@@ -218,6 +220,37 @@ def main() -> int:
             record("items" in data, "笔记库返回笔记列表")
         except Exception as exc:
             record(False, "笔记库返回收藏夹分组", str(exc))
+
+        # ---- 8c. 看图挑画面的开关：新机默认开、能存能读 ----
+        # 这个开关决定「纯人物/空镜/同页重复的图」会不会被剔掉。
+        # 新机上必须默认开着，而且关掉再打开要能持久化——否则用户改完重开就丢。
+        try:
+            with LOCAL.open(base + "/api/settings", timeout=30) as r:
+                st = json.loads(r.read().decode("utf-8"))
+            record(st.get("vision_frame_judge") is True,
+                   "看图挑画面默认开启", f"vision_frame_judge={st.get('vision_frame_judge')}")
+
+            def _post_judge(val: bool) -> dict:
+                req = urllib.request.Request(
+                    base + "/api/settings",
+                    data=json.dumps({"vision_frame_judge": val}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with LOCAL.open(req, timeout=30) as r:
+                    return json.loads(r.read().decode("utf-8"))
+
+            got_off = _post_judge(False)["settings"].get("vision_frame_judge")
+            record(got_off is False, "开关可以关闭", f"返回 {got_off}")
+            back = _post_judge(True)["settings"].get("vision_frame_judge")
+            record(back is True, "开关可以重新打开", f"返回 {back}")
+            with LOCAL.open(base + "/api/settings", timeout=30) as r:
+                again = json.loads(r.read().decode("utf-8")).get("vision_frame_judge")
+            record(again is True, "开关改动已持久化", f"重读 {again}")
+
+            with LOCAL.open(base + "/", timeout=30) as r:
+                page = r.read().decode("utf-8", "replace")
+            record('id="setVisionPick"' in page, "设置页里有这个勾选框")
+        except Exception as exc:
+            record(False, "看图挑画面的开关可用", str(exc))
 
         # ---- 9. 没配 Key 时，模型相关接口要给出明确提示而不是崩 ----
         try:
