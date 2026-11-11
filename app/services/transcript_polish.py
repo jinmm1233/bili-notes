@@ -14,6 +14,7 @@ from typing import Callable
 from ..core.config import Settings
 from ..core.llm import LLMClient
 from ..core.models import Segment
+from ..core import zh
 from .summarize import is_foreign
 
 log = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ def polish_segments(
                 end=seg.end,
                 source=seg.source,
                 text=src or seg.text,
-                translation=dst if (want_trans and dst) else "",
+                translation=zh.to_simplified(dst) if (want_trans and dst) else "",
             )
         done += len(batch)
         if on_progress:

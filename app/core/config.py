@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     asr_vad: bool = True
     # auto = 先用 3 段采样检测语种再转写；也可直接指定（如英文科普视频写 en）
     asr_language: str = "auto"
+    # 混说补救：陪跑类视频（外语原声 + 中文讲解）整段只有一个语种参数，
+    # 中文会被转成繁体并带音译。开启后把带中文的段用中文语种再转一遍。
+    asr_mixed_language: bool = True
     hf_endpoint: str = "https://hf-mirror.com"
     # B站 AI 字幕接口返回的内容不可信：同一 bvid 多次请求会拿到
     # 时长相近但内容完全无关的其他视频字幕（实测越南旅游视频
@@ -249,7 +252,7 @@ def save_overrides(updates: dict) -> None:
         "output_dir", "max_frames_total", "scene_phash_distance",
         "llm_max_concurrency", "cache_policy", "open_browser",
         "lan_access", "lan_token",
-        "uniform_interval", "asr_vad", "hd_frames", "hd_frame_edge", "parallel_pipeline",
+        "uniform_interval", "asr_vad", "asr_mixed_language", "hd_frames", "hd_frame_edge", "parallel_pipeline",
         "use_ai_subtitle", "asr_language", "polish_punctuation", "bilingual_transcript",
         "frame_captions", "vision_frame_judge", "travel_itinerary",
         # 笔记详细度：档位是真相，max_frames_* / scene_* / uniform_interval 由它派生

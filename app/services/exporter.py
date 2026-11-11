@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.models import Chapter, Frame, VideoNote
+from ..core import zh
 from ..core.paths import fmt_ts, safe_dirname, ts_link
 from . import itinerary, mindmap as mm
 from .subtitle import to_srt
@@ -58,7 +59,8 @@ def export(
     # 2. 正文
     body = render_markdown(note, tree, image_map, llm_label)
     md_path = out_dir / "notes.md"
-    md_path.write_text(body, encoding="utf-8", newline="\n")
+    # 兜底：整篇再过一遍繁简，保证笔记里看不到繁体
+    md_path.write_text(zh.to_simplified(body), encoding="utf-8", newline="\n")
 
     # 3. 附属文件
     if tree and (tree.get("children") or tree.get("name")):

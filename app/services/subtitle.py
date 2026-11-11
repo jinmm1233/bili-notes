@@ -14,6 +14,7 @@ import httpx
 
 from ..core.errors import UpstreamError
 from ..core.models import Segment
+from ..core import zh
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +207,8 @@ def _parse_bili_json(payload: dict[str, Any]) -> list[Segment]:
             end = float(item.get("to", start))
         except (TypeError, ValueError):
             continue
-        segments.append(Segment(start=start, end=max(end, start), text=text, source="cc"))
+        segments.append(Segment(start=start, end=max(end, start),
+                                 text=zh.to_simplified(text), source="cc"))
     segments.sort(key=lambda s: s.start)
     return segments
 
@@ -230,7 +232,7 @@ def parse_srt(content: str) -> list[Segment]:
         idx = lines.index(time_line)
         text = " ".join(lines[idx + 1:]).strip()
         if text:
-            out.append(Segment(start=s, end=e, text=text, source="cc"))
+            out.append(Segment(start=s, end=e, text=zh.to_simplified(text), source="cc"))
     return out
 
 

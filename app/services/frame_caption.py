@@ -27,6 +27,7 @@ from typing import Any, Callable
 from ..core.config import Settings
 from ..core.llm import LLMClient, parse_json_loose
 from ..core.models import Chunk, Frame
+from ..core import zh
 from ..core.paths import fmt_ts
 from . import mathfmt
 
@@ -177,6 +178,9 @@ def _apply(frame: Frame, rec: dict[str, Any]) -> bool:
     # 模型爱把矩阵写成 [[1,2],[3,4]] / A^-1，这里统一转成 LaTeX，笔记里才能渲染
     title = mathfmt.normalize(title)
     points = [mathfmt.normalize(p) for p in points]
+    # 模型照抄画面上的繁体字时一并转简体
+    title = zh.to_simplified(title)
+    points = [zh.to_simplified(p) for p in points]
     frame.screen_title = title
     frame.screen_points = points
     # caption 保留为单行摘要，供旧逻辑（代表画面选择等）沿用

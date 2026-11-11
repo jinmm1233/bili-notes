@@ -59,6 +59,7 @@ class SettingsIn(BaseModel):
     llm_base_url: str | None = None
     asr_model: str | None = None
     asr_language: str | None = None
+    asr_mixed_language: bool | None = None
     output_dir: str | None = None
     max_frames_total: int | None = Field(default=None, ge=0, le=400)
     # 笔记详细度：brief / standard / detailed（同时决定候选密度与每段配额）
@@ -285,6 +286,7 @@ def read_settings(request: Request) -> dict[str, Any]:
         "llm_base_url": preset.get("base_url") or settings.llm_base_url,
         "asr_model": settings.asr_model,
         "asr_language": settings.asr_language,
+        "asr_mixed_language": settings.asr_mixed_language,
         "output_dir": str(settings.output_dir),
         "max_frames_total": settings.max_frames_total,
         # 前端靠它回显三档选择；只返回 total 会让「详细」下次打开变回「适中」

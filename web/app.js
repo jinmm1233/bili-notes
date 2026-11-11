@@ -2971,6 +2971,7 @@ async function loadSettings() {
   $('setProvider').value = s.llm_provider;
   $('setAsr').value = s.asr_model;
   $('setAsrLang').value = s.asr_language || 'auto';
+  $('setAsrMixed').checked = s.asr_mixed_language !== false;
   renderFfmpeg(s.ffmpeg);
   $('setDetail').value = s.note_detail || 'standard';
   renderDetail();
@@ -3607,6 +3608,7 @@ async function saveAll() {
     llm_provider: $('setProvider').value,
     asr_model: $('setAsr').value,
     asr_language: $('setAsrLang').value || 'auto',
+    asr_mixed_language: $('setAsrMixed').checked,
     note_detail: $('setDetail').value,
     hd_frames: $('setHd').checked,
     parallel_pipeline: $('setParallel').checked,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from ..core.config import Settings
 from ..core.errors import CancelledError, DependencyMissingError
 from ..core.http import stream_download
 from ..core.models import Segment
+from ..core import zh
 
 if TYPE_CHECKING:                      # 只为类型注解，运行期不引入 numpy
     import numpy as np
@@ -28,6 +30,14 @@ log = logging.getLogger(__name__)
 
 ProgressFn = Callable[[float, str], None]
 CancelFn = Callable[[], bool]
+
+# 混说补救用：中文段重转时的引导语（Whisper 会照着提示的语种/字形输出）
+_MIXED_ZH_PROMPT = "以下是中文讲解，请用简体中文输出。"
+_ZH_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _zh_count(text: str) -> int:
+    return len(_ZH_RE.findall(text or ""))
 
 # 各档位的模型体积（MB，int8 量化后约等于 fp16 的一半）。
 # 用于下载进度估算 —— 拿不到 Content-Length 时只能按这个走。
@@ -277,6 +287,98 @@ def ensure_model(
     return target
 
 
+def _zh_scan(
+    settings: Settings,
+    model,
+    audio: "np.ndarray",
+    cancel: CancelFn | None = None,
+) -> list[tuple[float, float, str, float]]:
+    """第二遍：用中文语种把全片扫一遍。
+
+    返回 (start, end, 文本, avg_logprob)。
+
+    为什么必须有这一遍：整段只有一个语种参数时，外语原声占多数 → 整段按英语转，
+    而博主讲中文的那几秒**根本产不出段落**（实测 en 遍在那些位置 avg_logprob=-9，
+    相当于「没有这段语音」）。所以中文不是被转坏了，是压根没被听见。
+    """
+    segs, _info = model.transcribe(
+        audio,
+        language="zh",
+        beam_size=1,                    # 只用来定位，精度靠后面的重转
+        vad_filter=settings.asr_vad,
+        vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
+        condition_on_previous_text=False,
+        initial_prompt=_MIXED_ZH_PROMPT,
+    )
+    out: list[tuple[float, float, str, float]] = []
+    for s in segs:
+        if cancel and cancel():
+            raise CancelledError("任务已取消")
+        text = (s.text or "").strip()
+        if text:
+            out.append((float(s.start), float(s.end), text,
+                        float(getattr(s, "avg_logprob", 0.0) or 0.0)))
+    return out
+
+
+def _pick_zh_windows(
+    zh_segs: list[tuple[float, float, str, float]],
+    first: list[Segment],
+    first_lp: list[float],
+    margin: float = 0.15,
+) -> list[tuple[float, float, str, float]]:
+    """从中文扫描结果里，挑出「这一段本来就是中文语音」的部分。
+
+    判据（不用 logprob 跨语种比较——实测不可靠：TED 纯英文视频里
+    中文硬转的乱码 logprob 反而比正经英文高，会把英文全改成中文）：
+
+    1. **外语遍自己都吐了中文**：说明那段确实是中文语音，外语解码器认出来了
+       （哪怕只认出几个字，也是强信号）；
+    2. 或者**外语遍在那儿完全哑了**（一个段都没出）：中文语音让外语解码器
+       直接放弃输出，这是陪跑视频里最典型的形态（实测 en 遍 avg_logprob=-9）。
+
+    两条都不满足的区间一律不动，纯外语视频因此完全不受影响。
+    """
+    picked: list[tuple[float, float, str, float]] = []
+    for st, en, text, _lp in zh_segs:
+        zh = _zh_count(text)
+        if zh < 4:
+            continue
+        # 中文密度太低的多半是英文硬转的噪声
+        if zh < 0.25 * len(text.replace(" ", "")):
+            continue
+        seg_zh = 0
+        has_seg = False
+        for seg in first:
+            if min(en, seg.end) - max(st, seg.start) > 0.3:
+                has_seg = True
+                seg_zh += _zh_count(seg.text)
+        if not (seg_zh >= 2 or not has_seg):
+            continue
+        picked.append((st, en, text, _lp))
+    return picked
+
+
+def _merge_with_zh(
+    first: list[Segment],
+    winners: list[tuple[float, float, str, float]],
+) -> list[Segment]:
+    """把中文区域的段替换进外语结果里。"""
+    out: list[Segment] = []
+    for seg in first:
+        covered = False
+        for st, en, _text, _lp in winners:
+            if min(seg.end, en) - max(seg.start, st) > 0.5 * (en - st):
+                covered = True
+                break
+        if not covered:
+            out.append(seg)
+    for st, en, text, _lp in winners:
+        out.append(Segment(start=st, end=en, text=zh.to_simplified(text), source="asr"))
+    out.sort(key=lambda s: s.start)
+    return out
+
+
 def transcribe(
     settings: Settings,
     audio_path: str,
@@ -337,6 +439,8 @@ def transcribe(
 
     total = float(getattr(info, "duration", 0) or 0) or audio_seconds
     result: list[Segment] = []
+    raw_texts: list[str] = []          # 与 result 一一对应：第一遍转出来的原文
+    first_lp: list[float] = []         # 与 result 一一对应：第一遍每段的置信度
     # 剩余时间用滑动窗口估：全局平均会把模型加载、音频解码的时间算进去，
     # 开头几秒得出的"还要 16 分钟"完全是误导（真实只要 2 分钟）。
     samples: list[tuple[float, float]] = []
@@ -345,7 +449,10 @@ def transcribe(
             raise CancelledError("任务已取消")
         text = (seg.text or "").strip()
         if text:
-            result.append(Segment(start=float(seg.start), end=float(seg.end), text=text, source="asr"))
+            result.append(Segment(start=float(seg.start), end=float(seg.end),
+                                  text=zh.to_simplified(text), source="asr"))
+            raw_texts.append(text)
+            first_lp.append(float(getattr(seg, "avg_logprob", 0.0) or 0.0))
         if on_progress and total > 0:
             pct = min(99.0, float(seg.end) / total * 100.0)
             done_s = float(seg.end)
@@ -364,6 +471,32 @@ def transcribe(
                     if left > 20:
                         remain = f"，约剩 {left / 60:.0f} 分钟" if left > 60 else f"，约剩 {left:.0f} 秒"
             on_progress(pct, f"转写 {pct:.0f}%（{len(result)} 句{remain}）")
+
+    # ---- 混说补救：外语原声 + 中文讲解的视频，中文部分得单独再认一遍 ----
+    # 陪跑类视频（博主播放外语音频 + 自己用中文补充讲解）整段只有一个语种参数：
+    # 课程英文占绝对多数 → 整段按英语转 → 博主讲中文的那几秒**根本产不出段落**，
+    # 补充讲解等于全丢（实测 en 遍在那些位置的 avg_logprob = -9，等于「没这段」）。
+    #
+    # 补救：再扫一遍全片（这次用中文语种），用置信度对比挑出「本来就是中文语音」
+    # 的区间，把外语结果里对应的段换成中文结果。
+    # 触发条件：第一遍输出里已经带中文（免费信号）——纯外语视频不会有，零额外开销。
+    if (settings.asr_mixed_language and language != "zh" and result):
+        # 触发信号：外语遍自己都吐出了中文 —— 说明这段音频里确实有中文语音。
+        # 纯外语视频不会命中，零额外开销。
+        suspected = sum(_zh_count(t) for t in raw_texts) >= 4
+        if suspected:
+            log.info("检测到疑似中英混说（外语为主但夹中文），开始中文补扫…")
+            if on_progress:
+                on_progress(99.0, "检测到中英混说，正在补扫中文段…")
+            zh_segs = _zh_scan(settings, model, audio, cancel=cancel)
+            winners = _pick_zh_windows(zh_segs, result, first_lp)
+            if winners:
+                log.info("混说补救：%d 段改用中文识别", len(winners))
+                result = _merge_with_zh(result, winners)
+            else:
+                log.info("混说补救：没找到确属中文语音的段，保持原样")
+        else:
+            log.info("外语转写里没有中文，按纯外语处理")
 
     elapsed_total = time.time() - started
     log.info(

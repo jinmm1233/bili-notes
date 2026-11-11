@@ -78,6 +78,10 @@ hiddenimports += [
     "lxml.etree",
     "latex2mathml.converter",
     "mathml2omml",
+    # 繁简转换：纯 Python，但要在 try/except 里导入，PyInstaller 静态分析扫不到，
+    # 不显式声明的话打包后繁简转换会静默失效（笔记里留着繁体）。
+    "zhconv",
+    "zhconv.zhcdict",
     "app.services.export_docx",
     "app.services.export_pdf",
     "app.services.quiz_export",
