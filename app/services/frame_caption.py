@@ -252,6 +252,11 @@ def prune(chunks: list[Chunk]) -> dict[str, int]:
                 dropped_dup += 1
         keep.extend(best_by_page.values())
         keep.sort(key=lambda f: f.ts)
+        # 兜底：整块都被判成没用时（纯人像讲解、全片空镜），至少留一张最像样的。
+        # 否则那一节在笔记里完全没画面，读者对不上时间码。
+        if not keep:
+            keep = [max(chunk.frames, key=lambda f: (f.info_level, f.sharpness, f.ts))]
+            log.info("整块无可用画面，保留信息量最高的一张（%s）", fmt_ts(keep[0].ts))
         chunk.frames = keep
     if dropped_useless or dropped_dup:
         log.info("画面判断：剔掉无信息 %d 张、同页重复 %d 张", dropped_useless, dropped_dup)

@@ -117,11 +117,27 @@ def test_keep_same_page_when_later_more_complete() -> None:
     ok(kept == [120], f"留下 120s 那张（实际 {kept}）")
 
 
+def test_all_useless_keeps_one() -> None:
+    """整块都判成没用（纯人物讲解）时，至少留一张，别让那一节没画面。"""
+    print("\n--- 整块无可用画面时保底 ---")
+    f1 = make_frame(30, "g1")
+    f2 = make_frame(60, "g2")
+    records = [
+        {"kind": "人物", "useful": False, "info": 1, "page": "", "title": "", "points": []},
+        {"kind": "人物", "useful": False, "info": 2, "page": "", "title": "", "points": []},
+    ]
+    chunk = run_caption([f1, f2], records)
+    FC.prune([chunk])
+    ok(len(chunk.frames) == 1, f"仍留 1 张（实际 {len(chunk.frames)}）")
+    ok(chunk.frames and round(chunk.frames[0].ts) == 60, "留的是信息量更高的那张")
+
+
 if __name__ == "__main__":
     test_judge_stored_without_text()
     test_prune_drops_and_dedupes()
     test_unjudged_untouched()
     test_keep_same_page_when_later_more_complete()
+    test_all_useless_keeps_one()
     print()
     if FAILED:
         print(f"失败 {FAILED} 项")

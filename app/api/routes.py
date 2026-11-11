@@ -69,6 +69,7 @@ class SettingsIn(BaseModel):
     polish_punctuation: bool | None = None
     bilingual_transcript: bool | None = None
     frame_captions: bool | None = None
+    vision_frame_judge: bool | None = None
     travel_itinerary: bool | None = None
     vision_provider: str | None = None
     vision_base_url: str | None = None
@@ -294,6 +295,7 @@ def read_settings(request: Request) -> dict[str, Any]:
         "polish_punctuation": settings.polish_punctuation,
         "bilingual_transcript": settings.bilingual_transcript,
         "frame_captions": settings.frame_captions,
+        "vision_frame_judge": settings.vision_frame_judge,
         "travel_itinerary": settings.travel_itinerary,
         "vision_provider": settings.vision_provider,
         "vision_base_url": settings.vision_base_url,

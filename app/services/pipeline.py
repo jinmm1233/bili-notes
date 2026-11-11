@@ -431,13 +431,14 @@ class Pipeline:
         )
         # 看图模型顺手判了「这帧有没有信息 / 是不是同一页」，据此剔一遍：
         # 纯人物、空镜、同页重复的图不该出现在笔记里。
-        # 没配视觉模型时所有帧都是「没判过」，这一步不生效。
-        stats = frame_caption.prune(chunks)
-        if stats["useless"] or stats["duplicate"]:
-            self.warnings.append(
-                f"看图模型判掉 {stats['useless']} 张无信息画面、"
-                f"{stats['duplicate']} 张同页重复画面"
-            )
+        # 默认开（设置页可关）；没配视觉模型时所有帧都是「没判过」，这一步不生效。
+        if getattr(self.settings, "vision_frame_judge", True):
+            stats = frame_caption.prune(chunks)
+            if stats["useless"] or stats["duplicate"]:
+                self.warnings.append(
+                    f"看图模型判掉 {stats['useless']} 张无信息画面、"
+                    f"{stats['duplicate']} 张同页重复画面"
+                )
 
     # ---- 概念审核 ----
     def _review_concepts(self, glossary: list[dict[str, str]]) -> list[dict[str, str]]:

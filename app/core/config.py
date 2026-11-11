@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # 画面要点：从关键帧里「有选择地」提取画面文字（PPT 题目/分点/公式），
     # 内容太简略的用讲解补全；产出同时回喂总结层，笔记结构贴着课件骨架走。
     frame_captions: bool = True
+    # 用看图模型挑画面（默认开）：同一次视觉调用里顺手判「这帧有没有信息、
+    # 是不是和前面同一页」，据此剔掉纯人物/空镜/同页重复的图。
+    # 没有配看图模型时自动不生效；关掉就退回按像素打分选图。
+    vision_frame_judge: bool = True
 
     # ---- 笔记详细度（三档，用户只选一个）----
     # 档位是唯一真相：下面这几个抽帧参数由它派生，避免「档位选了详细、配额还是 3」。
@@ -247,7 +251,7 @@ def save_overrides(updates: dict) -> None:
         "lan_access", "lan_token",
         "uniform_interval", "asr_vad", "hd_frames", "hd_frame_edge", "parallel_pipeline",
         "use_ai_subtitle", "asr_language", "polish_punctuation", "bilingual_transcript",
-        "frame_captions", "travel_itinerary",
+        "frame_captions", "vision_frame_judge", "travel_itinerary",
         # 笔记详细度：档位是真相，max_frames_* / scene_* / uniform_interval 由它派生
         "note_detail", "max_frames_per_chunk", "scene_min_gap", "vision_max_frames",
         "vision_provider", "vision_base_url", "vision_model",

@@ -2979,6 +2979,7 @@ async function loadSettings() {
   $('setPolish').checked = s.polish_punctuation !== false;
   $('setBilingual').value = s.bilingual_transcript === false ? 'source' : 'bilingual';
   $('setCaption').checked = s.frame_captions !== false;
+  $('setVisionPick').checked = s.vision_frame_judge !== false;
   $('setItinerary').checked = s.travel_itinerary !== false;
   renderVision(s);
   $('setCachePolicy').value = s.cache_policy || 'media';
@@ -3612,6 +3613,7 @@ async function saveAll() {
     polish_punctuation: $('setPolish').checked,
     bilingual_transcript: $('setBilingual').value !== 'source',
     frame_captions: $('setCaption').checked,
+    vision_frame_judge: $('setVisionPick').checked,
     travel_itinerary: $('setItinerary').checked,
     vision_provider: $('setVision').value,
     vision_base_url: $('setVisionUrl').value.trim(),
