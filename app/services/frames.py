@@ -28,6 +28,15 @@ log = logging.getLogger(__name__)
 # 4 只把几乎完全相同的画面算重复，模板相近的两页各留一张。
 _DUP_DISTANCE = 4
 
+# 「同一页」的第二判据：时间邻近 + 略宽阈值。
+# 整帧 pHash 对「站着不动的幻灯片」很好用，但对**真人出镜的板书课**失效：
+# 老师一走一动，同一块黑板的前后两帧就能差 6-8 位，宽松不到 4 位阈值，
+# 于是笔记里出现三张一模一样的板书（实测 00:06 / 00:12 / 00:24 同一块黑板）。
+# 所以再加一条：90 秒内、差 12 位以内，也算同一页，只留一张。
+# 12 位仍低于「翻页」的典型差异（相邻两页 PPT 实测 12 位以上），不会误并不同页。
+_DUP_NEAR = 12
+_DUP_WINDOW = 90.0
+
 _CUE_PATTERNS = ("看这里", "这个图", "如图所示", "这张图", "看这个", "公式", "代码",
                  "这个表", "示意图", "流程图", "架构图", "我们看", "请注意")
 
@@ -343,25 +352,53 @@ def score_and_select(
         frame.score = (0.35 * text_norm + 0.20 * sharp_norm + 0.25 * rel
                        + 0.10 + 0.15 * frame.text_density + anchor_bonus)
 
-    ordered = sorted(frames, key=lambda f: f.score, reverse=True)
+    # 同分时的先后顺序决定「留哪一张」：
+    # 板书是边讲边写的，同一段里**越靠后越完整**，所以同分优先取靠后那张。
+    # 以前按时间正序排，等于永远留「刚写第一个字」的那张。
+    ordered = sorted(frames, key=lambda f: (-round(f.score, 4), -f.ts))
     selected: list[Frame] = []
     per_chunk_count: dict[int, int] = {}
+    used_bucket: dict[tuple[int, int], float] = {}
 
-    def take(frame: Frame) -> bool:
+    def _chunk_span(idx: int) -> float:
+        if not chunks or idx >= len(chunks):
+            return 0.0
+        return max(0.0, chunks[idx].end - chunks[idx].start)
+
+    def _bucket(idx: int, ts: float, cap: int) -> int:
+        """把知识块均分成 cap 个时间格，每格最多出一张。
+
+        这是「配额铺满整段」的关键：一块 10 分钟给了 8 个名额，就按 75 秒一格铺开。
+        只按分数取前 8 张的话，同分时永远落在块首，后面写满板书的部分一张都拿不到。
+        """
+        span = _chunk_span(idx)
+        if not span or not cap:
+            return -1
+        n = int((ts - chunks[idx].start) / (span / cap))
+        return max(0, min(cap - 1, n))
+
+    def take(frame: Frame, allow_full_bucket: bool = False) -> bool:
         # 0 = 不限：详细档靠这个把画面全部留下，不再被固定配额砍掉
         if settings.max_frames_total and len(selected) >= settings.max_frames_total:
             return False
         if frame.score < 0.08:
             return False
         idx = chunk_of.get(id(frame), 0)
-        if (settings.max_frames_per_chunk
-                and per_chunk_count.get(idx, 0) >= settings.max_frames_per_chunk):
+        cap = settings.max_frames_per_chunk or 0
+        if cap and per_chunk_count.get(idx, 0) >= cap:
             return False
-        if any(_hamming(frame.phash, s.phash) < _DUP_DISTANCE
-               for s in selected if frame.phash and s.phash):
+        if cap and not allow_full_bucket:
+            b = _bucket(idx, frame.ts, cap)
+            if b >= 0 and (idx, b) in used_bucket:
+                return False
+        if any(_same_page(frame, s) for s in selected):
             return False
         selected.append(frame)
         per_chunk_count[idx] = per_chunk_count.get(idx, 0) + 1
+        if cap:
+            b = _bucket(idx, frame.ts, cap)
+            if b >= 0:
+                used_bucket[(idx, b)] = frame.ts
         return True
 
     # 第一轮：讲解指着的那几张先入座。
@@ -379,6 +416,12 @@ def score_and_select(
         if frame.path in must_keep:
             continue
         take(frame)
+
+    # 第三轮：还有空名额（某几格没有候选帧）时，允许同格再补一张
+    for frame in ordered:
+        if frame in selected:
+            continue
+        take(frame, allow_full_bucket=True)
 
     # 新颖度回填：与最终入选集合的相似度越低越新颖
     for frame in selected:
@@ -399,7 +442,11 @@ def score_and_select(
             continue
         if per_chunk_cap and sum(1 for f in selected if chunk_of.get(id(f), 0) == idx) >= per_chunk_cap:
             continue
-        selected.append(max(pool, key=lambda f: f.sharpness))
+        cand = max(pool, key=lambda f: f.sharpness)
+        # 补位也要守「同一页只留一张」，否则补进来的往往就是刚被去重掉的那张
+        if any(_same_page(cand, s) for s in selected):
+            continue
+        selected.append(cand)
 
     # 兜底二：整片一张都过不了阈值（纯风景），按清晰度取前 3 张
     if not selected and frames:
@@ -546,6 +593,22 @@ def _relevance(frame: Frame, chunk: Chunk | None) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a)
+
+
+def _same_page(a: Frame, b: Frame) -> bool:
+    """两张帧是不是「同一页画面」（去重用）。
+
+    两条判据任一成立即可：
+      1. 整帧几乎完全一致（< _DUP_DISTANCE）——静止幻灯片；
+      2. 时间邻近且相似（< _DUP_NEAR 且在 _DUP_WINDOW 内）——真人出镜的板书课，
+         人在动导致整帧差异被放大，但内容其实是同一块黑板。
+    """
+    d = _hamming(a.phash, b.phash)
+    if d >= 64:          # 没有可区分特征（纯色/黑屏），不当作重复
+        return False
+    if d < _DUP_DISTANCE:
+        return True
+    return d < _DUP_NEAR and abs(a.ts - b.ts) <= _DUP_WINDOW
 
 
 def _hamming(a: str, b: str) -> int:

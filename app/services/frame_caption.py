@@ -60,11 +60,44 @@ _COMMON_RULES = (
 )
 
 _JSON_SPEC = (
-    '严格只返回 JSON：{"captions":[{"index":1,"title":"画面标题/PPT题目，'
-    '没有就空字符串","points":["要点1","要点2"]}]}，'
+    '严格只返回 JSON：{"captions":[{"index":1,'
+    '"kind":"板书/PPT/图表/实拍/人物/空镜/界面",'
+    '"useful":true,'
+    '"info":3,'
+    '"page":"这一页的标识",'
+    '"title":"画面标题/PPT题目，没有就空字符串",'
+    '"points":["要点1","要点2"]}]}，'
     "points 2-5 条、每条不超过 40 字；画面确实没有可取文字时 "
     "title 和 points 都给空数组或空字符串，不要硬凑。"
     "index 与画面序号一一对应，不要输出任何解释文字。"
+)
+
+_JUDGE_RULES = (
+    "\n\n【这帧值不值得进笔记】除要点外，还要给四个判断：\n"
+    "- kind：画面类型，取值之一——板书（黑板/白板手写）、PPT（课件页面）、"
+    "图表（曲线图/示意图/表格）、实拍（实验器材/实物演示）、人物（主要是人）、"
+    "空镜（几乎空白、墙面、过渡画面）、界面（软件/代码/操作界面）。\n"
+    "- useful：true/false。判断标准只有一条——**这帧画面上有没有值得留存的信息**。\n"
+    "  true：板书、课件、公式推导、图表、关键操作界面；\n"
+    "  false：只有人物、空镜、纯墙面天花板、严重虚焦或过曝看不清、翻页过程中的模糊帧。\n"
+    "  ⚠️ 老师站在写满字的黑板前 → useful=true（信息在黑板，不在人）。\n"
+    "- info：1-5 的整数，画面承载的信息量。1=几乎空白，2=只有一两行字，"
+    "3=常规一页课件，4=多步推导/多条要点，5=整屏公式或复杂图表。\n"
+    "  ⚠️ 要在**同一批画面之间比较**着给分：只有标题的一律 2，"
+    "有图表/多步推导的给 4-5，不要所有帧都给 3。\n"
+    "- page：这一页画面的标识。**同一页要输出完全相同的字符串**（用页面标题或"
+    "最显著的那行字，例如 \"§9.3 电场 电场强度\"）；换页就必须不同。"
+    "没有页面概念的（实拍、人物、空镜）填空字符串。\n"
+)
+
+_CAPTION_SYSTEM = (
+    "你是视频笔记助手，负责从视频画面里「有选择地」提取文字要点。\n"
+    "我会给你一张画面截图，这一段的【讲解文字】（语音转写，可能有错别字），"
+    "以及 OCR 识别到的【文字线索】（行列顺序可能乱、可能断行缺字，仅供比对）。\n\n"
+    + _COMMON_RULES
+    + _JUDGE_RULES
+    + "\n"
+    + _JSON_SPEC
 )
 
 _SYSTEM = (
@@ -72,6 +105,7 @@ _SYSTEM = (
     "我会给你一张画面截图，这一段的【讲解文字】（语音转写，可能有错别字），"
     "以及 OCR 识别到的【文字线索】（行列顺序可能乱、可能断行缺字，仅供比对）。\n\n"
     + _COMMON_RULES
+    + _JUDGE_RULES
     + "\n"
     + _JSON_SPEC
 )
@@ -115,6 +149,24 @@ def _shrink_jpeg(path: str, max_side: int = 1024, quality: int = 82) -> tuple[by
 
 def _apply(frame: Frame, rec: dict[str, Any]) -> bool:
     """把一条模型结果写到帧上。返回是否取到了有效内容。"""
+    # 判断类字段先落：即使这帧没有文字要点（空镜/人物），也要记下「判过、没用」，
+    # 后面的 prune 才知道该不该把它剔掉。
+    kind = str(rec.get("kind") or "").strip()[:8]
+    page = str(rec.get("page") or "").strip()[:60]
+    useful = rec.get("useful")
+    try:
+        info = int(rec.get("info") or 0)
+    except (TypeError, ValueError):
+        info = 0
+    if kind:
+        frame.kind = kind
+    if page:
+        frame.page_key = page
+    if isinstance(useful, bool):
+        frame.useful = useful
+    if 0 <= info <= 9:
+        frame.info_level = info
+
     title = str(rec.get("title") or "").strip()[:40]
     points = [
         str(p).strip() for p in (rec.get("points") or [])
@@ -130,6 +182,80 @@ def _apply(frame: Frame, rec: dict[str, Any]) -> bool:
     # caption 保留为单行摘要，供旧逻辑（代表画面选择等）沿用
     frame.caption = "；".join([title, *points])[:150]
     return True
+
+
+# 判定「不值得进笔记」的画面类型。模型已经给了 useful，这里只用来兜一道：
+# 万一它把 useful 写错（比如人物特写也给了 true），类型是空镜/人物的仍然剔掉。
+_DROP_KINDS = {"空镜", "人物"}
+
+_PAGE_NOISE = " \t\r\n，。、：:；;·-—_()（）[]【】\"'“”‘’《》<>"
+
+
+def _page_norm(key: str) -> str:
+    """同一页的两个写法要能对上。
+
+    实测模型会给「§9.3 电场 电场强度」和「§9.3电场 电场强度」（差一个空格），
+    不归一化就当成两页，去重直接失效。所以只留实义字符再比。
+    """
+    return "".join(ch for ch in (key or "").lower() if ch not in _PAGE_NOISE)[:40]
+
+
+def prune(chunks: list[Chunk]) -> dict[str, int]:
+    """按视觉模型的判断剔帧：没用的删掉、同一页只留信息最全的那张。
+
+    只处理**判过**的帧（info_level > 0）。没配视觉模型时整篇都是 0，
+    这一步等于不生效，行为与以前完全一致。
+
+    为什么用 page_key 而不是 pHash：老师站在黑板前走动时，整帧 pHash 会差 6-8 位，
+    按像素判定认不出「同一页」；模型能直接读出这是同一块黑板、同一行标题。
+    """
+    from . import frames as _frames_mod  # 延迟导入：避免与 frames 循环依赖
+
+    dropped_useless = 0
+    dropped_dup = 0
+    for chunk in chunks:
+        if not chunk.frames:
+            continue
+        judged = [f for f in chunk.frames if f.info_level > 0]
+        if not judged:
+            continue
+        keep: list[Frame] = []
+        best_by_page: dict[str, Frame] = {}
+        for frame in chunk.frames:
+            if frame.info_level <= 0:       # 没判过 → 保持原样（像素去重仍然生效）
+                if any(_frames_mod._same_page(frame, k) for k in keep if k.phash):
+                    dropped_dup += 1
+                    continue
+                keep.append(frame)
+                continue
+            if not frame.useful:
+                dropped_useless += 1
+                continue
+            # 模型说有用、但类型是空镜/人物且信息量极低 —— 兜一道，防止它手滑
+            if frame.kind in _DROP_KINDS and frame.info_level <= 2:
+                dropped_useless += 1
+                continue
+            key = _page_norm(frame.page_key)
+            if not key:
+                keep.append(frame)
+                continue
+            prev = best_by_page.get(key)
+            if prev is None:
+                best_by_page[key] = frame
+                continue
+            # 同一页：留信息量高的；一样高就留靠后的（板书写得更全）
+            better = (frame.info_level, frame.ts) > (prev.info_level, prev.ts)
+            if better:
+                best_by_page[key] = frame
+                dropped_dup += 1
+            else:
+                dropped_dup += 1
+        keep.extend(best_by_page.values())
+        keep.sort(key=lambda f: f.ts)
+        chunk.frames = keep
+    if dropped_useless or dropped_dup:
+        log.info("画面判断：剔掉无信息 %d 张、同页重复 %d 张", dropped_useless, dropped_dup)
+    return {"useless": dropped_useless, "duplicate": dropped_dup}
 
 
 def caption_frames(
@@ -277,16 +403,32 @@ def _notes_with_vision(
         )
         detailed = getattr(settings, "note_detail", "") == "detailed"
         try:
-            raw = client.complete_vision(
-                _SYSTEM + _density_note(settings), user, [(data, mime)],
-                max_tokens=1300 if detailed else 900,
-            )
-            caps = parse_json_loose(raw).get("captions") or []
+            caps: list[dict[str, Any]] = []
+            for attempt in range(2):
+                # 视觉模型偶尔会吐一段说明文字而不是 JSON（实测 6 张里挂 1 张）。
+                # 不重试的话这帧就"没判过"，后面的同页去重会漏掉它，白留一张重复图。
+                raw = client.complete_vision(
+                    _SYSTEM + _density_note(settings)
+                    + ("\n\n⚠️ 上一次返回的不是合法 JSON。这次只输出 JSON，不要任何解释。"
+                       if attempt else ""),
+                    user, [(data, mime)],
+                    max_tokens=1300 if detailed else 900,
+                )
+                caps = parse_json_loose(raw).get("captions") or []
+                if caps:
+                    break
+                log.info("画面判断返回非 JSON，重试一次（帧 %s）", frame.path)
             for rec in caps:
-                if isinstance(rec, dict) and (
-                    str(rec.get("title") or "").strip()
-                    or any(str(p).strip() for p in (rec.get("points") or []))
-                ):
+                if not isinstance(rec, dict):
+                    continue
+                # 有文字要点、或者有画面判断（useful/info/kind）都要收：
+                # 空镜/人物这类帧本来就没有文字，但「它没用」这个结论必须落下来，
+                # 否则 prune 看不到判断，照样会把人物特写放进笔记。
+                has_text = (str(rec.get("title") or "").strip()
+                            or any(str(p).strip() for p in (rec.get("points") or [])))
+                has_judge = bool(rec.get("kind") or rec.get("page")
+                                 or rec.get("useful") is not None or rec.get("info"))
+                if has_text or has_judge:
                     out[i] = rec
                     break
         except Exception as exc:  # noqa: BLE001

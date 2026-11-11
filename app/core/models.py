@@ -149,6 +149,15 @@ class Frame:
     screen_title: str = ""
     screen_points: list[str] = field(default_factory=list)
     caption: str = ""
+    # 画面判断（视觉模式产出；0/false/"" 表示没判过，退回本地规则）
+    # kind: 板书 / PPT / 图表 / 实拍 / 人物 / 空镜 / 界面
+    # useful: 这帧值不值得进笔记（人物特写、空镜、过渡画面 = False）
+    # info_level: 1-5，画面承载的信息量（1 几乎空白，5 整屏公式/推导）
+    # page_key: 同一页画面的标识，用于跨帧去重（模型给，比 pHash 准）
+    kind: str = ""
+    useful: bool = True
+    info_level: int = 0
+    page_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
