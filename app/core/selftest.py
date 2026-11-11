@@ -150,6 +150,19 @@ def run() -> int:
     except Exception as exc:                # noqa: BLE001
         check(False, f"vendor: mathml2omml 导入失败（{type(exc).__name__}）")
 
+    # ---- 看图模型的备用模型链：打包环境里必须仍可用 ----
+    # 免费模型排队限流时靠它自动换模型；冻结环境里漏掉这个类，
+    # 表现是「一排队就整篇卡住」，很难定位。
+    try:
+        from app.core.llm import FallbackVisionClient as _FB
+        from app.core.errors import LLMError as _LE
+        _e = _LE("x", http_status=429, rate_limited=True)
+        _fb = _FB([], [])
+        check(getattr(_e, "rate_limited", False), "限流错误带 rate_limited 标记")
+        check(hasattr(_fb, "complete_vision"), "备用模型链可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"备用模型链导入失败（{type(exc).__name__}）")
+
     # ---- 繁简转换：打包环境里必须仍可用 ----
     # zhconv 的字典是 json 数据文件，不收进包里的话冻结环境会「不报错但一个
     # 字也没转」——最难发现的那种坏，所以在这里硬断言一次。
