@@ -72,10 +72,23 @@ class Pipeline:
         self._sub: dict[str, float] = {"text": 0.0, "vision": 0.0}
         self._weights: dict[str, float] = {"text": 45.0, "vision": 30.0}
         self._sub_lock = threading.Lock()
+        # 各阶段耗时统计（秒）
+        self._stage_seconds: dict[str, float] = {}
+        self._last_stage = ""
+        self._last_stage_at = 0.0
         # 全片画面停留区间，抽帧阶段填好，音画锚定/切块都要用
         self._scene_spans: list[SceneSpan] = []
 
     def _emit(self, stage: str, pct: float, msg: str) -> None:
+        # 记一下每个阶段花了多久：长视频跑几小时，
+        # 结束后能直接看到「哪一步最费时间」，不用翻日志。
+        now = time.time()
+        last = self._last_stage_at
+        if last and self._last_stage:
+            self._stage_seconds[self._last_stage] = (
+                self._stage_seconds.get(self._last_stage, 0.0) + (now - last))
+        self._last_stage = stage
+        self._last_stage_at = now
         log.info("[%s %.0f%%] %s", stage, pct, msg)
         if self._emit_fn:
             self._emit_fn(stage, round(pct, 1), msg)
@@ -307,7 +320,20 @@ class Pipeline:
                 self.warnings.append(f"讲义生成失败：{exc}")
 
         elapsed = time.time() - started
-        self._emit("done", 100, f"完成，用时 {elapsed:.0f}s")
+        now = time.time()
+        if self._last_stage and self._last_stage_at:
+            self._stage_seconds[self._last_stage] = (
+                self._stage_seconds.get(self._last_stage, 0.0)
+                + (now - self._last_stage_at))
+        # 耗时明细：哪一步最费时间一目了然
+        detail = "，".join(
+            f"{k} {int(v)}s" for k, v in sorted(
+                self._stage_seconds.items(), key=lambda kv: -kv[1]) if v >= 5)
+        if detail:
+            log.info("各阶段耗时：%s", detail)
+            self._emit("done", 100, f"完成，用时 {elapsed:.0f}s（{detail}）")
+        else:
+            self._emit("done", 100, f"完成，用时 {elapsed:.0f}s")
         return PipelineResult(
             task_id=task_id,
             md_path=md_path,
