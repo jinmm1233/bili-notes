@@ -419,6 +419,9 @@ input[type=text],input[type=password],input[type=number],select{
 }
 input::placeholder{color:var(--soft)}
 input:focus,select:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+/* 复选框不能被容器里的 input 宽度规则撑大：勾选框只画一个小方块，
+   多出来的全是空白，标签看着就像被拉长了（「只看知识类」曾被撑到 196px） */
+input[type=checkbox]{width:auto!important;min-width:0!important}
 select{cursor:pointer;appearance:none;
   background-image:url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 10px center;background-size:15px;padding-right:32px}
@@ -562,7 +565,9 @@ select{cursor:pointer;appearance:none;
 .tag{font-size:10.5px;padding:1.5px 7px;border-radius:20px;background:var(--tag-bg);color:var(--tag-c)}
 
 .kb-tools{display:flex;gap:8px;align-items:center;flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end}
-.kb-tools input{width:230px;min-width:110px;flex:0 1 230px}
+/* 只给文本框定宽；勾选框不能吃这条 —— 否则复选框被撑到 110px 宽，
+   标签里的空白比文字还长，「只看知识类」看着像被拉长了 */
+.kb-tools input[type=text]{width:230px;min-width:110px;flex:0 1 230px}
 .kb-tools .btn{flex:0 0 auto}
 /* 排序口径：固定宽度，别跟着全局 select{width:100%} 把工具栏撑开 */
 .kb-tools .lib-sort{flex:0 0 auto;width:auto;min-width:104px;padding:7px 30px 7px 10px;font-size:12.5px}
