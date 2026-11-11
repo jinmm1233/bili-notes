@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import re
 import time
 from typing import Any
@@ -145,6 +146,9 @@ class FallbackVisionClient:
         self.current = 0
         self._fail_streak = 0
         self.switched_to: str = ""
+        # 并发调用时（视觉判断现在 4 路并发），
+        # 切换模型和计失败次数必须加锁，否则状态会打架。
+        self._lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -162,58 +166,65 @@ class FallbackVisionClient:
         其他错误（网络抖动等）连续两次才换，避免偶发抖动就换模型。
         """
         rate_limited = bool(getattr(exc, "rate_limited", False))
-        if rate_limited:
-            need = 1
-        else:
-            need = 2
-        if self._fail_streak < need or self.current + 1 >= len(self.clients):
-            return False
-        prev = self._name(self.current)
-        self.current += 1
-        self._fail_streak = 0
-        self.switched_to = self._name(self.current)
+        need = 1 if rate_limited else 2
+        with self._lock:
+            if self._fail_streak < need or self.current + 1 >= len(self.clients):
+                return False
+            prev = self._name(self.current)
+            self.current += 1
+            self._fail_streak = 0
+            self.switched_to = self._name(self.current)
         log.warning("看图模型 %s 失败，切换到备用模型 %s", prev, self.switched_to)
         return True
 
     def complete_vision(self, system, user, images, *, max_tokens=1024):
         last_exc: Exception | None = None
         while True:
-            client = self.clients[self.current]
+            with self._lock:
+                client = self.clients[self.current]
             try:
                 out = client.complete_vision(system, user, images, max_tokens=max_tokens)
-                self._fail_streak = 0
+                with self._lock:
+                    self._fail_streak = 0
                 return out
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                self._fail_streak += 1
+                with self._lock:
+                    self._fail_streak += 1
                 if not self._try_switch(exc):
                     raise last_exc
 
     def complete_json(self, system, user, *, max_tokens=2048):
         last_exc: Exception | None = None
         while True:
-            client = self.clients[self.current]
+            with self._lock:
+                client = self.clients[self.current]
             try:
                 out = client.complete_json(system, user, max_tokens=max_tokens)
-                self._fail_streak = 0
+                with self._lock:
+                    self._fail_streak = 0
                 return out
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                self._fail_streak += 1
+                with self._lock:
+                    self._fail_streak += 1
                 if not self._try_switch(exc):
                     raise last_exc
 
     def complete(self, system, user, *, json_mode=False, max_tokens=2048):
         last_exc: Exception | None = None
         while True:
-            client = self.clients[self.current]
+            with self._lock:
+                client = self.clients[self.current]
             try:
                 out = client.complete(system, user, json_mode=json_mode, max_tokens=max_tokens)
-                self._fail_streak = 0
+                with self._lock:
+                    self._fail_streak = 0
                 return out
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                self._fail_streak += 1
+                with self._lock:
+                    self._fail_streak += 1
                 if not self._try_switch(exc):
                     raise last_exc
 

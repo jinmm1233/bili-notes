@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
@@ -233,6 +234,9 @@ _DUP_WINDOW = 30.0
 # 同页的可以放得更宽（本来就是同一块板），不同页的收紧，避免张冠李戴。
 _REATTACH_SAME_PAGE = 300.0
 _REATTACH_ANY = 120.0
+
+# 视觉判断的并发路数（60 块串行 51 分钟 → 4 路并发约 15 分钟）
+_VISION_CONCURRENCY = 4
 
 _DROP_KINDS = {"空镜", "人物"}
 
@@ -459,12 +463,16 @@ def caption_frames(
     # 3 块就是 20 分钟白跑，一帧都判不上（实测 6 块跑了 49 分钟全灭）。
     # 一次失败就换模型/停掉，比继续等强。
     fuse_threshold = 1
-    consecutive_fail = 0
-    for chunk in todo:
-        if cancel and cancel():
-            break
-        if vision_client:
-            rate_limited = False
+    # 视觉判断并发跑：60 个块串行要 51 分钟（实测），
+    # 4 路并发能压到 15 分钟以内。
+    # 熔断信号用共享标志位 —— 任何一块撞上限流就全局停。
+    vision_concurrency = _VISION_CONCURRENCY if vision_client else 1
+
+    def _process(chunk: Chunk) -> tuple[bool, bool]:
+        """处理一个块。返回 (是否整块失败, 是否限流)。"""
+        if not vision_client:
+            caps = _notes_with_text(text_client, chunk, settings)
+        else:
             try:
                 caps = _notes_with_vision_batched(
                     vision_client, chunk, settings, cancel=cancel)
@@ -473,37 +481,62 @@ def caption_frames(
                 # 其他错误（网络抖动）继续下一块，别一次抖动就停整篇。
                 rate_limited = bool(getattr(exc, "rate_limited", False))
                 caps = {}
-            # 一帧都没判上 = 这一块整块失败
-            if chunk.frames and not any(f.judged for f in chunk.frames):
-                vision_failed += 1
-                consecutive_fail += 1
-                if rate_limited and consecutive_fail >= fuse_threshold:
-                    rest = len(todo) - todo.index(chunk) - 1
-                    log.warning("看图模型排队中，跳过剩下的 %d 块（避免白跑几十分钟）",
-                                rest)
-                    if on_progress:
-                        on_progress(99.0, "看图模型排队中，跳过剩余画面的判断")
-                    # 剩下的块改用文字模式：至少还能拿到画面文字要点
-                    for rest_chunk in todo[todo.index(chunk) + 1:]:
-                        rest_caps = _notes_with_text(text_client, rest_chunk, settings)
-                        for i, frame in enumerate(rest_chunk.frames, 1):
-                            if rec := rest_caps.get(i):
-                                _apply(frame, rec)
-                        done += len(rest_chunk.frames)
-                    break
-            else:
-                consecutive_fail = 0
-        else:
-            caps = _notes_with_text(text_client, chunk, settings)
-
+                if rate_limited:
+                    return True, True
         for i, frame in enumerate(chunk.frames, 1):
             if rec := caps.get(i):
                 _apply(frame, rec)
-        done += len(chunk.frames)
+        failed = bool(chunk.frames) and not any(f.judged for f in chunk.frames)
+        return failed, False
 
-        if on_progress and total_frames:
-            pct = min(99.0, done / total_frames * 100.0)
-            on_progress(pct, f"提炼画面要点 {pct:.0f}%")
+    if vision_concurrency > 1 and len(todo) > 1:
+        results: dict[int, tuple[bool, bool]] = {}
+        with ThreadPoolExecutor(max_workers=vision_concurrency) as pool:
+            futures = {pool.submit(_process, c): i for i, c in enumerate(todo)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception:  # noqa: BLE001
+                    results[idx] = (True, False)
+                done += len(todo[idx].frames)
+                if on_progress and total_frames:
+                    pct = min(99.0, done / total_frames * 100.0)
+                    on_progress(pct, f"提炼画面要点 {pct:.0f}%")
+                # 有块撞上限流 → 立刻停，别再排新的请求
+                if results[idx][1]:
+                    log.warning("看图模型排队中，停止派发新的请求")
+                    for f in futures:
+                        f.cancel()
+                    break
+        # 剩下没跑到的块用文字模式兜底
+        for i, chunk in enumerate(todo):
+            if i in results:
+                if results[i][0]:
+                    vision_failed += 1
+                continue
+            caps = _notes_with_text(text_client, chunk, settings)
+            for i2, frame in enumerate(chunk.frames, 1):
+                if rec := caps.get(i2):
+                    _apply(frame, rec)
+            done += len(chunk.frames)
+            vision_failed += 1
+    else:
+        for chunk in todo:
+            if cancel and cancel():
+                break
+            failed, rate_limited = _process(chunk)
+            if failed:
+                vision_failed += 1
+                if rate_limited:
+                    log.warning("看图模型排队中，跳过剩下的块（避免白跑几十分钟）")
+                    if on_progress:
+                        on_progress(99.0, "看图模型排队中，跳过剩余画面的判断")
+                    break
+            done += len(chunk.frames)
+            if on_progress and total_frames:
+                pct = min(99.0, done / total_frames * 100.0)
+                on_progress(pct, f"提炼画面要点 {pct:.0f}%")
 
     if on_progress:
         on_progress(100.0, "画面要点提炼完成")

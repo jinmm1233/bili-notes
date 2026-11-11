@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from ..core.config import Settings
@@ -24,6 +25,8 @@ CancelFn = Callable[[], bool]
 
 # 每批送多少句给模型：太大容易超 token、太小则往返次数多
 _BATCH = 30
+# 并发路数：49 批串行要 2 小时，4 路并发压到半小时以内
+_CONCURRENCY = 4
 
 _SYSTEM = (
     "你是一名字幕校对小助手。我会发来一批按编号排列的转录文本行，"
@@ -69,10 +72,9 @@ def polish_segments(
 
     out: list[Segment] = list(segments)
     total = len(segments)
-    done = 0
-    for start in range(0, total, _BATCH):
-        if cancel and cancel():
-            break
+
+    def _polish_batch(start: int) -> list[str]:
+        """润色一批，返回每句的 {"src","dst"}。"""
         batch = segments[start:start + _BATCH]
         user = "\n".join(f"{i + 1}. {s.text}" for i, s in enumerate(batch))
         try:
@@ -81,11 +83,41 @@ def polish_segments(
         except Exception as exc:  # noqa: BLE001
             log.warning("转录润色单批失败，本批回退原句：%s", exc)
             lines = []
-
-        for i, seg in enumerate(batch):
+        result: list[str] = []
+        for i in range(len(batch)):
             rec = lines[i] if i < len(lines) else {}
-            src = (rec.get("src") or "").strip()
-            dst = (rec.get("dst") or "").strip()
+            result.append(str((rec.get("src") or "").strip()))
+            result.append(str((rec.get("dst") or "").strip()))
+        return result
+
+    # 并发跑：49 批串行要 2 小时（实测每批 204 秒，深夜更慢），
+    # 并发 4 路能压到半小时以内。批与批之间互不影响，可以乱序完成。
+    starts = list(range(0, total, _BATCH))
+    done = 0
+    if len(starts) <= 1:
+        batches = [(s, _polish_batch(s)) for s in starts]
+    else:
+        batches = []
+        with ThreadPoolExecutor(max_workers=_CONCURRENCY) as pool:
+            futures = {pool.submit(_polish_batch, s): s for s in starts}
+            for fut in as_completed(futures):
+                start = futures[fut]
+                try:
+                    pairs = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("转录润色第 %d 批异常，本批回退原句：%s", start, exc)
+                    pairs = []
+                batches.append((start, pairs))
+                done += len(segments[start:start + _BATCH])
+                if on_progress:
+                    pct = min(99.0, done / total * 100.0)
+                    on_progress(pct, f"转录润色 {pct:.0f}%")
+
+    for start, pairs in sorted(batches):
+        batch = segments[start:start + _BATCH]
+        for i, seg in enumerate(batch):
+            src = pairs[i * 2] if i * 2 < len(pairs) else ""
+            dst = pairs[i * 2 + 1] if i * 2 + 1 < len(pairs) else ""
             out[start + i] = Segment(
                 start=seg.start,
                 end=seg.end,
@@ -93,10 +125,6 @@ def polish_segments(
                 text=src or seg.text,
                 translation=zh.to_simplified(dst) if (want_trans and dst) else "",
             )
-        done += len(batch)
-        if on_progress:
-            pct = min(99.0, done / total * 100.0)
-            on_progress(pct, f"转录润色 {pct:.0f}%")
 
     if on_progress:
         on_progress(100.0, "转录润色完成")

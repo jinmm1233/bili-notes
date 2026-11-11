@@ -421,7 +421,7 @@ class Pipeline:
                 "本次画面要点先按画面文字合成，不影响其他部分。"
             )
         self._emit("summary", 82, "提炼画面要点…")
-        judged = frame_caption.caption_frames(
+        frame_caption.caption_frames(
             client,
             chunks,
             self.settings,
@@ -432,9 +432,12 @@ class Pipeline:
         # 视觉判断有没有真的跑起来？跑不起来（模型排队/限流）要告诉用户，
         # 否则会以为「AI 已经逐帧看过画面」，实际上一帧都没判，
         # 后面既不会剔同页重复，也不会认人物空镜。
+        # 判据是「有没有帧被真正判过」（judged），不是「有没有取到内容」——
+        # 文字模式兜底也能产出内容，但那不算「看过图」。
         if vision is not None:
             total_frames = sum(len(c.frames) for c in chunks)
-            if total_frames and judged == 0:
+            judged_frames = sum(1 for c in chunks for f in c.frames if f.judged)
+            if total_frames and judged_frames == 0:
                 self.warnings.append(
                     "看图模型这次完全没排上队（免费模型限流），画面没被逐帧看过。"
                     "本次配图不做同页去重、也不筛人物空镜；"
