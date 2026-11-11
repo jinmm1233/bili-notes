@@ -447,6 +447,9 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
     """
     lines: list[str] = ["## 笔记", ""]
     last_path = ""   # 只去掉紧挨着的重复图，不再限制一张图全篇出现一次
+    # 同一页 PPT 全篇只贴一次图（跨主题、跨小节都算）。
+    # 用户要的是「一张图 + 把这页的内容说清楚」，不是每个知识点贴一张一样的图。
+    page_shot_done: set[str] = set()
 
     def shot(node: dict[str, Any], order: int | None = None):
         nonlocal last_path
@@ -467,7 +470,14 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
             lines.append(f"> {summary}")
             lines.append("")
 
-        lines.extend(_render_shot(note, shot(topic, i), with_caption=True))
+        topic_shot = shot(topic, i)
+        if topic_shot:
+            tkey = _page_of(topic_shot[0])
+            if tkey and tkey in page_shot_done:
+                topic_shot = None      # 这一页在下面的小节里已经贴过了
+            elif tkey:
+                page_shot_done.add(tkey)
+        lines.extend(_render_shot(note, topic_shot, with_caption=True))
 
         for group in topic.get("groups") or []:
             gtitle = group.get("title") or ""
@@ -489,7 +499,6 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
                 # 不是每条知识点都贴一张一样的图。
                 # 所以：这张图第一次出现时把画面要点（页面标题 + 全部要点）
                 # 完整写出来，后面同页的要点只留文字，不再重复贴图。
-                page_shot_done: set[str] = set()
                 for text, ts in zip(items, times):
                     result = shot({"ts": ts})
                     if result:

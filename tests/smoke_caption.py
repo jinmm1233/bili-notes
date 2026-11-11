@@ -167,12 +167,31 @@ def test_vision_mode_and_fallback():
     chunk = Chunk(index=0, start=0, end=30, text="这节课讲逆矩阵的求法",
                   frames=[Frame(ts=5.0, path=str(img_path), origin="scene")])
 
-    # 1) 视觉模式：第一帧失败自动兜底
+    # 1) 视觉模式：多图请求失败 → 逐帧重试 → 逐帧成功就用逐帧的结果
+    #    降级路径：多图失败 → 逐帧再试 → 还不成才退回文字模式。
     fake = FakeVision()
     n = fc.caption_frames(FakeText(), [chunk], settings, vision_client=fake)
-    assert len(fake.calls) == 1, "应发起一次看图请求"
-    assert chunk.frames[0].screen_title == "兜底题目", "失败的帧要退回文字模式"
+    assert len(fake.calls) >= 2, "多图失败后应逐帧重试"
+    assert chunk.frames[0].screen_title == "矩阵连乘", "逐帧重试成功就用它的结果"
     assert n == 1
+
+    # 1b) 连逐帧都失败 → 退回文字模式
+    chunk1b = Chunk(index=0, start=0, end=30, text="这节课讲逆矩阵的求法",
+                    frames=[Frame(ts=5.0, path=str(img_path), origin="scene")])
+
+    class AlwaysFail:
+        model = "fake-vl"
+        def __init__(self):
+            self.calls = []
+        def complete_vision(self, system, user, images, *, max_tokens=1024):
+            self.calls.append(images)
+            raise RuntimeError("一直失败")
+        def complete_json(self, system, user, *, max_tokens=2048):
+            return {"captions": [{"index": 1, "title": "兜底题目", "points": ["（文字兜底）要点"]}]}
+
+    fail = AlwaysFail()
+    fc.caption_frames(FakeText(), [chunk1b], settings, vision_client=fail)
+    assert chunk1b.frames[0].screen_title == "兜底题目", "全失败才退回文字模式"
 
     # 2) 没配看图模型：走文字模式
     chunk2 = Chunk(index=1, start=30, end=60, text="继续讲例题",

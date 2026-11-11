@@ -115,6 +115,17 @@ def _model_fits(provider: str, model: str) -> bool:
     return any(token in name for token in family)
 
 
+def _backoff(attempt: int, status_code: int = 0) -> float:
+    """重试等待时间（秒）。
+
+    限流（429）是「排队」不是「失败」——免费模型排队常常要几十秒，
+    2/4 秒的退避太短，等于白等一次就放弃了。所以限流单独走长退避。
+    """
+    if status_code == 429:
+        return min(60.0, 8.0 * (2 ** attempt))
+    return float(min(2 ** attempt, 8))
+
+
 class LLMClient:
     def __init__(
         self,
@@ -225,6 +236,7 @@ class LLMClient:
         }
         prompt_tokens = _estimate_tokens(system) + _estimate_tokens(user)
         last_error = ""
+        last_code = 0
         for attempt in range(1, self.max_retries + 1):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
@@ -239,10 +251,13 @@ class LLMClient:
                 if resp.status_code == 200:
                     return self._extract(resp.json(), prompt_tokens)
                 last_error = self._translate_error(resp)
+                last_code = resp.status_code
                 if resp.status_code < 500 and resp.status_code != 429:
                     raise LLMError(last_error, http_status=502)
             if attempt < self.max_retries:
-                time.sleep(min(2 ** attempt, 8))
+                # 429 限流是「排队」，不是「报错」——免费模型排队常常要几十秒，
+                # 2/4 秒的退避太短，等于白等一次就放弃了。
+                time.sleep(_backoff(attempt, last_code))
         raise LLMError(f"看图模型调用失败：{last_error}")
 
     def complete(
@@ -272,6 +287,7 @@ class LLMClient:
         }
         prompt_tokens = _estimate_tokens(system) + _estimate_tokens(user)
         last_error = ""
+        last_code = 0
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -287,11 +303,12 @@ class LLMClient:
                 if resp.status_code == 200:
                     return self._extract(resp.json(), prompt_tokens)
                 last_error = self._translate_error(resp)
+                last_code = resp.status_code
                 if resp.status_code < 500 and resp.status_code != 429:
                     raise LLMError(last_error, http_status=502)
 
             if attempt < self.max_retries:
-                time.sleep(min(2 ** attempt, 8))
+                time.sleep(_backoff(attempt, last_code))
 
         raise LLMError(f"模型调用失败：{last_error}")
 

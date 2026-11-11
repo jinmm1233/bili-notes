@@ -659,9 +659,48 @@ def _notes_with_vision(
             if has_text or has_judge:
                 out[idx] = rec
     except Exception as exc:  # noqa: BLE001
-        log.warning("看图提炼失败（%d 帧），退回文字线索：%s", len(valid), exc)
-        out.update(_notes_with_text(client, _single_chunk(chunk, 1), settings))
+        # 一批失败不能整批丢：多图请求更容易撞上模型限流（免费模型高峰期）。
+        # 降级成一帧一次再试 —— 请求小、不容易排队，实在不行才退回文字线索。
+        log.warning("看图提炼失败（%d 帧），改为逐帧重试：%s", len(valid), exc)
+        for i, frame in valid:
+            single = _notes_with_vision_single(client, chunk, frame, settings)
+            if single:
+                out[i] = single
+        if not out:
+            log.warning("逐帧重试仍无结果，退回文字线索")
+            out.update(_notes_with_text(client, _single_chunk(chunk, 1), settings))
     return out
+
+
+def _notes_with_vision_single(
+    client: LLMClient, chunk: Chunk, frame: Frame, settings: Settings | None = None,
+) -> dict[str, Any]:
+    """只判一帧（多图请求失败时的降级路径）。"""
+    if not frame.path:
+        return {}
+    data, mime = _shrink_jpeg(frame.path)
+    if not data:
+        return {}
+    ocr = (frame.ocr_text or "").strip()
+    ocr_hint = ocr[:300] + ("…" if len(ocr) > 300 else "") if ocr else "（无）"
+    user = (
+        f"【讲解文字】{chunk.text[:1000]}\n"
+        f"【文字线索】{ocr_hint}\n"
+        f"请提取画面（第{int(frame.ts)}秒）上的文字要点，只返回约定格式的 JSON。"
+    )
+    try:
+        raw = client.complete_vision(
+            _SYSTEM + _density_note(settings), user, [(data, mime)],
+            max_tokens=1300 if getattr(settings, "note_detail", "") == "detailed" else 900,
+        )
+        caps = parse_json_loose(raw).get("captions") or []
+    except Exception as exc:  # noqa: BLE001
+        log.info("单帧看图也失败（帧 %s）：%s", frame.path, exc)
+        return {}
+    for rec in caps:
+        if isinstance(rec, dict):
+            return rec
+    return {}
 
 
 def _single_chunk(chunk: Chunk, index_1based: int) -> Chunk:
