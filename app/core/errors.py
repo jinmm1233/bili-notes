@@ -60,6 +60,12 @@ class FFmpegError(AppError):
 class LLMError(UpstreamError):
     code = "llm_failed"
 
+    def __init__(self, message: str, http_status: int = 502, *, rate_limited: bool = False):
+        super().__init__(message, http_status=http_status)
+        # rate_limited=True 表示「模型在排队/限流」——这种错误重试同一个模型
+        # 基本没用（单帧请求照样排），应该立刻换一个模型。
+        self.rate_limited = rate_limited
+
 
 class CancelledError(AppError):
     code = "cancelled"

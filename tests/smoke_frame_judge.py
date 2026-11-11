@@ -245,6 +245,45 @@ def test_all_useless_keeps_one() -> None:
     ok(chunk.frames and round(chunk.frames[0].ts) == 60, "留的是信息量更高的那张")
 
 
+
+def test_rate_limited_fuses_early() -> None:
+    """看图模型排队限流时，要立刻熔断，不能一块一块地白等。
+
+    实测：智谱免费模型排队时，每帧要等 48 秒（3 次重试 + 退避），
+    8 帧一块就是 6.5 分钟，60 个块能白跑一两个小时且一帧都判不上。
+    限流必须立刻熔断（改用文字模式），把时间还给用户。
+    """
+    print("\n--- 限流时立刻熔断 ---")
+    from app.core.errors import LLMError
+
+    class RateLimited:
+        model = "fake-vl"
+        def __init__(self):
+            self.calls = 0
+        def complete_vision(self, system, user, images, *, max_tokens=900):
+            self.calls += 1
+            raise LLMError("排队中", http_status=429, rate_limited=True)
+        def complete_json(self, system, user, *, max_tokens=2048):
+            return {"captions": [{"index": 1, "title": "文字兜底", "points": ["要点"]}]}
+
+    chunks = []
+    for i in range(6):
+        c = Chunk(index=i, start=i * 60, end=(i + 1) * 60, text="讲一段", frames=[])
+        c.frames = [make_frame(i * 60 + 10, f"m{i}")]
+        chunks.append(c)
+
+    fake = RateLimited()
+    st = Settings()
+    st.frame_captions = True
+    FC.caption_frames(fake, chunks, st, vision_client=fake)
+
+    ok(fake.calls <= 2, f"限流后应很快停（实际发了几次请求：{fake.calls}）")
+    # 剩下的块走文字模式，至少拿到画面文字要点
+    judged = sum(1 for c in chunks for f in c.frames if f.judged)
+    ok(judged == 0, f"限流时不该有帧被判过（实际 {judged}）")
+
+
+
 if __name__ == "__main__":
     test_judge_stored_without_text()
     test_prune_drops_and_dedupes()
@@ -255,6 +294,7 @@ if __name__ == "__main__":
     test_model_marked_duplicate_dropped()
     test_anchors_reattached_after_prune()
     test_all_useless_keeps_one()
+    test_rate_limited_fuses_early()
     print()
     if FAILED:
         print(f"失败 {FAILED} 项")

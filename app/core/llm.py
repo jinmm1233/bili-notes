@@ -44,6 +44,9 @@ PROVIDERS: dict[str, dict[str, str]] = {
             "glm-4.6v",          # 最强，收费
             "glm-5.3-flash",     # 5.3 原生多模态，也能看图
         ),
+        # 首选模型排队时自动换这些（实测同一时刻 5 个里 3 个在排队，
+        # 换一个往往就通了）。顺序按实测可用性排。
+        "vision_backups": ("glm-5.3-flash", "glm-4.6v-flash", "glm-4v-flash"),
         "hint": "有免费额度；key 申请：bigmodel.cn",
         "needs_key": "1",
     },
@@ -126,6 +129,95 @@ def _backoff(attempt: int, status_code: int = 0) -> float:
     return float(min(2 ** attempt, 8))
 
 
+class FallbackVisionClient:
+    """看图模型的自动降级包装。
+
+    免费模型排队限流是常态（实测同一时刻 5 个智谱视觉模型里 3 个在排队）。
+    一个模型排不上队不该让整篇笔记的看图判断全部作废 ——
+    这里在首选模型连续失败时自动切到备用模型。
+
+    降级顺序：调用方给的 clients 按顺序试，第一个能用的就一直用。
+    """
+
+    def __init__(self, clients: list["LLMClient"], names: list[str] | None = None):
+        self.clients = [c for c in clients if c is not None]
+        self.names = names or []
+        self.current = 0
+        self._fail_streak = 0
+        self.switched_to: str = ""
+
+    @property
+    def model(self) -> str:
+        return getattr(self.clients[self.current], "model", "") if self.clients else ""
+
+    def _name(self, idx: int) -> str:
+        if idx < len(self.names):
+            return self.names[idx]
+        return getattr(self.clients[idx], "model", f"model{idx}")
+
+    def _try_switch(self, exc: Exception | None = None) -> bool:
+        """失败了就换一个模型。返回是否换了。
+
+        限流（排队）立刻换 —— 重试同一个模型没用，队列不会因为你重试就变短。
+        其他错误（网络抖动等）连续两次才换，避免偶发抖动就换模型。
+        """
+        rate_limited = bool(getattr(exc, "rate_limited", False))
+        if rate_limited:
+            need = 1
+        else:
+            need = 2
+        if self._fail_streak < need or self.current + 1 >= len(self.clients):
+            return False
+        prev = self._name(self.current)
+        self.current += 1
+        self._fail_streak = 0
+        self.switched_to = self._name(self.current)
+        log.warning("看图模型 %s 失败，切换到备用模型 %s", prev, self.switched_to)
+        return True
+
+    def complete_vision(self, system, user, images, *, max_tokens=1024):
+        last_exc: Exception | None = None
+        while True:
+            client = self.clients[self.current]
+            try:
+                out = client.complete_vision(system, user, images, max_tokens=max_tokens)
+                self._fail_streak = 0
+                return out
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._fail_streak += 1
+                if not self._try_switch(exc):
+                    raise last_exc
+
+    def complete_json(self, system, user, *, max_tokens=2048):
+        last_exc: Exception | None = None
+        while True:
+            client = self.clients[self.current]
+            try:
+                out = client.complete_json(system, user, max_tokens=max_tokens)
+                self._fail_streak = 0
+                return out
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._fail_streak += 1
+                if not self._try_switch(exc):
+                    raise last_exc
+
+    def complete(self, system, user, *, json_mode=False, max_tokens=2048):
+        last_exc: Exception | None = None
+        while True:
+            client = self.clients[self.current]
+            try:
+                out = client.complete(system, user, json_mode=json_mode, max_tokens=max_tokens)
+                self._fail_streak = 0
+                return out
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._fail_streak += 1
+                if not self._try_switch(exc):
+                    raise last_exc
+
+
 class LLMClient:
     def __init__(
         self,
@@ -195,6 +287,24 @@ class LLMClient:
         key = store.get(provider) or ""
         if preset.get("needs_key") == "1" and not key:
             return None
+
+        # 备用模型：免费模型排队限流是常态（实测同一时刻智谱 5 个视觉模型
+        # 里 3 个在排队）。首选排不上队时自动换一个，别让整篇笔记的看图判断作废。
+        backups = [b for b in preset.get("vision_backups", ()) if b != model]
+        if backups:
+            clients = [cls(
+                base_url=base_url,
+                api_key=key or "ollama",
+                model=model,
+            )]
+            for b in backups:
+                clients.append(cls(
+                    base_url=base_url,
+                    api_key=key or "ollama",
+                    model=b,
+                ))
+            return FallbackVisionClient(clients, [model, *backups])
+
         return cls(
             base_url=base_url,
             api_key=key or "ollama",
@@ -252,11 +362,15 @@ class LLMClient:
                     return self._extract(resp.json(), prompt_tokens)
                 last_error = self._translate_error(resp)
                 last_code = resp.status_code
-                if resp.status_code < 500 and resp.status_code != 429:
+                if resp.status_code == 429:
+                    # 限流是「排队」不是「报错」：同一个模型重试基本没用
+                    # （单帧请求照样排），立刻抛出去让上层换备用模型。
+                    raise LLMError(
+                        f"看图模型调用失败：{last_error}",
+                        http_status=429, rate_limited=True)
+                if resp.status_code < 500:
                     raise LLMError(last_error, http_status=502)
             if attempt < self.max_retries:
-                # 429 限流是「排队」，不是「报错」——免费模型排队常常要几十秒，
-                # 2/4 秒的退避太短，等于白等一次就放弃了。
                 time.sleep(_backoff(attempt, last_code))
         raise LLMError(f"看图模型调用失败：{last_error}")
 
@@ -304,7 +418,9 @@ class LLMClient:
                     return self._extract(resp.json(), prompt_tokens)
                 last_error = self._translate_error(resp)
                 last_code = resp.status_code
-                if resp.status_code < 500 and resp.status_code != 429:
+                if resp.status_code == 429:
+                    raise LLMError(last_error, http_status=429, rate_limited=True)
+                if resp.status_code < 500:
                     raise LLMError(last_error, http_status=502)
 
             if attempt < self.max_retries:

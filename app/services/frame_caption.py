@@ -450,12 +450,49 @@ def caption_frames(
     mode = "视觉" if vision_client else "文字"
     log.info("画面要点提炼开始（%s模式）：%d 块 / %d 张图", mode, len(todo), total_frames)
     done = 0
+    vision_failed = 0
+    # 熔断：模型排队限流时，连续几块都判不上就停。
+    # 不熔断的话 60 个块 × (3 次重试 + 8 帧逐帧重试) 能白跑一两个小时，
+    # 而且一帧都判不出来（实测 6 个块跑了 49 分钟，全灭）。
+    # 熔断阈值 = 1：一次整块失败就停。
+    # 原来设 3 是想「多试几次」，但限流时每块要 6.5 分钟，
+    # 3 块就是 20 分钟白跑，一帧都判不上（实测 6 块跑了 49 分钟全灭）。
+    # 一次失败就换模型/停掉，比继续等强。
+    fuse_threshold = 1
+    consecutive_fail = 0
     for chunk in todo:
         if cancel and cancel():
             break
         if vision_client:
-            caps = _notes_with_vision_batched(
-                vision_client, chunk, settings, cancel=cancel)
+            rate_limited = False
+            try:
+                caps = _notes_with_vision_batched(
+                    vision_client, chunk, settings, cancel=cancel)
+            except Exception as exc:  # noqa: BLE001
+                # 限流要立刻熔断（换模型或停掉）；
+                # 其他错误（网络抖动）继续下一块，别一次抖动就停整篇。
+                rate_limited = bool(getattr(exc, "rate_limited", False))
+                caps = {}
+            # 一帧都没判上 = 这一块整块失败
+            if chunk.frames and not any(f.judged for f in chunk.frames):
+                vision_failed += 1
+                consecutive_fail += 1
+                if rate_limited and consecutive_fail >= fuse_threshold:
+                    rest = len(todo) - todo.index(chunk) - 1
+                    log.warning("看图模型排队中，跳过剩下的 %d 块（避免白跑几十分钟）",
+                                rest)
+                    if on_progress:
+                        on_progress(99.0, "看图模型排队中，跳过剩余画面的判断")
+                    # 剩下的块改用文字模式：至少还能拿到画面文字要点
+                    for rest_chunk in todo[todo.index(chunk) + 1:]:
+                        rest_caps = _notes_with_text(text_client, rest_chunk, settings)
+                        for i, frame in enumerate(rest_chunk.frames, 1):
+                            if rec := rest_caps.get(i):
+                                _apply(frame, rec)
+                        done += len(rest_chunk.frames)
+                    break
+            else:
+                consecutive_fail = 0
         else:
             caps = _notes_with_text(text_client, chunk, settings)
 
@@ -472,6 +509,12 @@ def caption_frames(
         on_progress(100.0, "画面要点提炼完成")
     n = sum(1 for c in chunks for f in c.frames if f.screen_points or f.screen_title)
     log.info("画面要点提炼完成：%d 张取到内容", n)
+    if vision_failed:
+        # 视觉判断整块失败通常意味着模型在排队限流。必须让用户知道，
+        # 否则会以为「AI 已经看过图了」，实际上一帧都没判，
+        # prune 完全不生效（既不会剔重复页，也不会认人物空镜）。
+        log.warning("有 %d/%d 个知识块的看图判断整体失败（模型排队或限流），"
+                    "这些块的画面没被真正看过", vision_failed, len(todo))
     return n
 
 
@@ -659,8 +702,14 @@ def _notes_with_vision(
             if has_text or has_judge:
                 out[idx] = rec
     except Exception as exc:  # noqa: BLE001
-        # 一批失败不能整批丢：多图请求更容易撞上模型限流（免费模型高峰期）。
-        # 降级成一帧一次再试 —— 请求小、不容易排队，实在不行才退回文字线索。
+        # 一批失败不能整批丢。但**限流时逐帧重试是纯浪费**：
+        # 排队是模型侧的事，请求变小也一样排 —— 实测每帧要等 48 秒
+        # （3 次重试 + 8/16/32 秒退避），8 帧就是 6.5 分钟，一帧都判不上。
+        # 所以：限流 → 直接交给上层换备用模型或熔断；
+        #       其他错误（网络抖动）→ 逐帧再试。
+        if getattr(exc, "rate_limited", False):
+            log.warning("看图模型排队中（%d 帧），本批跳过", len(valid))
+            raise
         log.warning("看图提炼失败（%d 帧），改为逐帧重试：%s", len(valid), exc)
         for i, frame in valid:
             single = _notes_with_vision_single(client, chunk, frame, settings)

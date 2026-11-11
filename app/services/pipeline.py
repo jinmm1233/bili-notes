@@ -421,7 +421,7 @@ class Pipeline:
                 "本次画面要点先按画面文字合成，不影响其他部分。"
             )
         self._emit("summary", 82, "提炼画面要点…")
-        frame_caption.caption_frames(
+        judged = frame_caption.caption_frames(
             client,
             chunks,
             self.settings,
@@ -429,6 +429,17 @@ class Pipeline:
             on_progress=lambda p, m: self._emit("summary", 82 + p * 0.05, m),
             cancel=self._cancel,
         )
+        # 视觉判断有没有真的跑起来？跑不起来（模型排队/限流）要告诉用户，
+        # 否则会以为「AI 已经逐帧看过画面」，实际上一帧都没判，
+        # 后面既不会剔同页重复，也不会认人物空镜。
+        if vision is not None:
+            total_frames = sum(len(c.frames) for c in chunks)
+            if total_frames and judged == 0:
+                self.warnings.append(
+                    "看图模型这次完全没排上队（免费模型限流），画面没被逐帧看过。"
+                    "本次配图不做同页去重、也不筛人物空镜；"
+                    "换个看图模型或过一会儿再生成会好很多。"
+                )
         # 看图模型顺手判了「这帧有没有信息 / 是不是同一页」，据此剔一遍：
         # 纯人物、空镜、同页重复的图不该出现在笔记里。
         # 默认开（设置页可关）；没配视觉模型时所有帧都是「没判过」，这一步不生效。
