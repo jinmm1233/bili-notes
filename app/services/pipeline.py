@@ -439,6 +439,10 @@ class Pipeline:
                     f"看图模型判掉 {stats['useless']} 张无信息画面、"
                     f"{stats['duplicate']} 张同页重复画面"
                 )
+            if stats.get("reattached"):
+                self.warnings.append(
+                    f"{stats['reattached']} 处配图重新指向了保留下来的画面"
+                )
 
     # ---- 概念审核 ----
     def _review_concepts(self, glossary: list[dict[str, str]]) -> list[dict[str, str]]:

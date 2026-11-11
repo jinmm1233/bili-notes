@@ -186,6 +186,18 @@ def _apply(frame: Frame, rec: dict[str, Any]) -> bool:
 
 # 判定「不值得进笔记」的画面类型。模型已经给了 useful，这里只用来兜一道：
 # 万一它把 useful 写错（比如人物特写也给了 true），类型是空镜/人物的仍然剔掉。
+# 「同一页」的重复判定时间窗（秒）。
+# 一整节课都在同一块黑板上写时，模型会给每一帧同一个 page_key。没有时间窗的
+# 「同页只留一张」会把 15 分钟的课从 24 张砍到 7 张，后面几个知识点全部配不到图
+# （实测：画面判断剔掉同页重复 17 张，后三节零配图）。
+# 板书会随时间累积，同一页在不同时间点承载的内容并不相同，
+# 只有**时间上相邻**的才算重复。30 秒 = 只合并几乎连着拍的重复帧。
+_DUP_WINDOW = 30.0
+# 剪枝后重新挂锚点时，允许的最大时间偏移（秒）。
+# 同页的可以放得更宽（本来就是同一块板），不同页的收紧，避免张冠李戴。
+_REATTACH_SAME_PAGE = 300.0
+_REATTACH_ANY = 120.0
+
 _DROP_KINDS = {"空镜", "人物"}
 
 _PAGE_NOISE = " \t\r\n，。、：:；;·-—_()（）[]【】\"'“”‘’《》<>"
@@ -201,18 +213,23 @@ def _page_norm(key: str) -> str:
 
 
 def prune(chunks: list[Chunk]) -> dict[str, int]:
-    """按视觉模型的判断剔帧：没用的删掉、同一页只留信息最全的那张。
+    """按视觉模型的判断剔帧：没用的删掉、同一页且时间相邻的只留信息量最高的那张。
 
     只处理**判过**的帧（info_level > 0）。没配视觉模型时整篇都是 0，
     这一步等于不生效，行为与以前完全一致。
 
     为什么用 page_key 而不是 pHash：老师站在黑板前走动时，整帧 pHash 会差 6-8 位，
     按像素判定认不出「同一页」；模型能直接读出这是同一块黑板、同一行标题。
+
+    为什么必须带时间窗（_DUP_WINDOW）：整节课都在同一块黑板上写时，模型对每帧
+    都给同一个 page_key。按「同页只留一张」去重，24 张会掉到 7 张，
+    后面几个知识点的配图全部落空。同页但相隔较远 → 内容不同，各留各的。
     """
     from . import frames as _frames_mod  # 延迟导入：避免与 frames 循环依赖
 
     dropped_useless = 0
     dropped_dup = 0
+    reattached = 0
     for chunk in chunks:
         if not chunk.frames:
             continue
@@ -220,7 +237,11 @@ def prune(chunks: list[Chunk]) -> dict[str, int]:
         if not judged:
             continue
         keep: list[Frame] = []
-        best_by_page: dict[str, Frame] = {}
+        # page -> 簇；每簇内的帧时间相邻、属于同一页，只留一个代表
+        clusters: dict[str, list[list[Frame]]] = {}
+        page_by_path: dict[str, str] = {}
+        page_by_ts: dict[float, str] = {}
+
         for frame in chunk.frames:
             if frame.info_level <= 0:       # 没判过 → 保持原样（像素去重仍然生效）
                 if any(_frames_mod._same_page(frame, k) for k in keep if k.phash):
@@ -228,6 +249,9 @@ def prune(chunks: list[Chunk]) -> dict[str, int]:
                     continue
                 keep.append(frame)
                 continue
+            key = _page_norm(frame.page_key)
+            page_by_path[frame.path] = key
+            page_by_ts[round(frame.ts, 2)] = key
             if not frame.useful:
                 dropped_useless += 1
                 continue
@@ -235,32 +259,101 @@ def prune(chunks: list[Chunk]) -> dict[str, int]:
             if frame.kind in _DROP_KINDS and frame.info_level <= 2:
                 dropped_useless += 1
                 continue
-            key = _page_norm(frame.page_key)
             if not key:
                 keep.append(frame)
                 continue
-            prev = best_by_page.get(key)
-            if prev is None:
-                best_by_page[key] = frame
-                continue
-            # 同一页：留信息量高的；一样高就留靠后的（板书写得更全）
-            better = (frame.info_level, frame.ts) > (prev.info_level, prev.ts)
-            if better:
-                best_by_page[key] = frame
-                dropped_dup += 1
+            bucket = clusters.setdefault(key, [])
+            # 跟「簇的第一张」比距离，而不是跟上一张比：否则 0s/37s/74s 会链式合并，
+            # 一节课的画面被一路吃光。
+            target: list[Frame] | None = None
+            for cl in bucket:
+                if abs(frame.ts - cl[0].ts) <= _DUP_WINDOW:
+                    target = cl
+                    break
+            if target is None:
+                bucket.append([frame])
             else:
-                dropped_dup += 1
-        keep.extend(best_by_page.values())
-        keep.sort(key=lambda f: f.ts)
+                target.append(frame)
+
+        # 每簇只留代表帧（信息量最高，一样高就留靠后的）
+        final: list[Frame] = []
+        seen_ids: set[int] = set()
+
+        def _add(frame: Frame) -> None:
+            if id(frame) not in seen_ids:
+                seen_ids.add(id(frame))
+                final.append(frame)
+
+        for frame in keep:
+            _add(frame)
+        for bucket in clusters.values():
+            for cl in bucket:
+                best = max(cl, key=lambda f: (f.info_level, f.ts))
+                _add(best)
+                dropped_dup += len(cl) - 1
+        keep = sorted(final, key=lambda f: f.ts)
         # 兜底：整块都被判成没用时（纯人像讲解、全片空镜），至少留一张最像样的。
         # 否则那一节在笔记里完全没画面，读者对不上时间码。
         if not keep:
             keep = [max(chunk.frames, key=lambda f: (f.info_level, f.sharpness, f.ts))]
             log.info("整块无可用画面，保留信息量最高的一张（%s）", fmt_ts(keep[0].ts))
         chunk.frames = keep
+        reattached += _reattach_anchors(chunk, keep, page_by_path, page_by_ts)
     if dropped_useless or dropped_dup:
         log.info("画面判断：剔掉无信息 %d 张、同页重复 %d 张", dropped_useless, dropped_dup)
-    return {"useless": dropped_useless, "duplicate": dropped_dup}
+    if reattached:
+        log.info("剪枝后锚点重挂到幸存帧：%d 处", reattached)
+    return {"useless": dropped_useless, "duplicate": dropped_dup, "reattached": reattached}
+
+
+def _reattach_anchors(chunk: Chunk, survivors: list[Frame],
+                      page_by_path: dict[str, str],
+                      page_by_ts: dict[float, str]) -> int:
+    """剪枝之后，把锚点重新指到幸存的帧上。
+
+    锚点的语义是「这句讲解对应哪一帧」。prune 把帧删了，锚点还指着那个已经不存在的
+    时刻 —— 配图按 ±8 秒就近找，找不到就是「这一条没有画面」，
+    后面几个知识点会整段没图（实测 24 张剪到 9 张，211 个锚点里 176 个配不上图）。
+
+    找法：优先挂到**同一页**的幸存帧上（本来就是同一块板，指过去不会张冠李戴），
+    没有同页的再退回本知识块内时间最近的。
+
+    锚点常常只有 frame_ts、frame_path 是空的（音画锚定时还没选帧），
+    所以页码要能按时间戳反查，否则「同页优先」根本用不上。
+    """
+    if not survivors:
+        return 0
+    by_page: dict[str, list[Frame]] = {}
+    for f in survivors:
+        key = page_by_path.get(f.path) or ""
+        if key:
+            by_page.setdefault(key, []).append(f)
+
+    moved = 0
+    for a in chunk.anchors:
+        if a.frame_ts <= 0:
+            continue
+        key = page_by_path.get(a.frame_path) or ""
+        if not key:
+            # 按时间戳反查它原本对应的那一帧属于哪一页
+            near = min(page_by_ts.items(),
+                       key=lambda kv: abs(kv[0] - a.frame_ts), default=None)
+            if near and abs(near[0] - a.frame_ts) <= 3.0:
+                key = near[1]
+        if key and by_page.get(key):
+            pool = by_page[key]
+            limit = _REATTACH_SAME_PAGE
+        else:
+            pool = survivors
+            limit = _REATTACH_ANY
+        best = min(pool, key=lambda f: abs(f.ts - a.frame_ts))
+        gap = abs(best.ts - a.frame_ts)
+        if gap < 0.01 or gap > limit:
+            continue
+        a.frame_ts = best.ts
+        a.frame_path = best.path
+        moved += 1
+    return moved
 
 
 def caption_frames(

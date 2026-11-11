@@ -104,17 +104,68 @@ def test_unjudged_untouched() -> None:
 
 
 def test_keep_same_page_when_later_more_complete() -> None:
-    print("\n--- 同页同信息量时留靠后的（板书写得更全）---")
+    """同页且时间相邻 → 只留信息量更高的那张（板书写得更全）。"""
+    print("\n--- 同页且相邻：留信息量更高的那张 ---")
     f1 = make_frame(60, "e1")
-    f2 = make_frame(120, "e2")
+    f2 = make_frame(75, "e2")
     records = [
         {"kind": "板书", "useful": True, "info": 3, "page": "同一块黑板", "title": "板书", "points": ["a"]},
-        {"kind": "板书", "useful": True, "info": 3, "page": "同一块黑板", "title": "板书", "points": ["a", "b"]},
+        {"kind": "板书", "useful": True, "info": 4, "page": "同一块黑板", "title": "板书", "points": ["a", "b"]},
     ]
     chunk = run_caption([f1, f2], records)
     FC.prune([chunk])
     kept = [round(f.ts) for f in chunk.frames]
-    ok(kept == [120], f"留下 120s 那张（实际 {kept}）")
+    ok(kept == [75], f"留下 75s 那张（实际 {kept}）")
+
+
+def test_same_page_far_apart_both_kept() -> None:
+    """整节课都在同一块黑板上 → 不能塌成一张。
+
+    这是一条真实故障：模型给整节课的每一帧都发同一个 page_key，
+    原来的「同页只留一张」把 24 张砍到 7 张，后半段知识点全无配图。
+    板书会随时间累积，相隔较远的同一页承载的内容并不相同。
+    """
+    print("\n--- 同页但相隔较远：各自保留 ---")
+    frames = [make_frame(t, f"k{t}") for t in (10, 60, 300, 600)]
+    records = [
+        {"kind": "板书", "useful": True, "info": 2, "page": "同一块黑板", "title": "板书", "points": ["a"]},
+        {"kind": "板书", "useful": True, "info": 3, "page": "同一块黑板", "title": "板书", "points": ["a", "b"]},
+        {"kind": "板书", "useful": True, "info": 4, "page": "同一块黑板", "title": "板书", "points": ["a", "b", "c"]},
+        {"kind": "板书", "useful": True, "info": 5, "page": "同一块黑板", "title": "板书", "points": ["a", "b", "c", "d"]},
+    ]
+    chunk = run_caption(frames, records)
+    FC.prune([chunk])
+    kept = [round(f.ts) for f in chunk.frames]
+    ok(kept == [10, 60, 300, 600], f"四张都留着（实际 {kept}）")
+
+
+def test_anchors_reattached_after_prune() -> None:
+    """剪枝删掉帧后，锚点要重新指到幸存的帧上。
+
+    否则那一条要点就找不到画面（配图按 ±8 秒就近找），后面几节全空。
+    """
+    print("\n--- 剪枝后锚点重挂 ---")
+    from app.core.models import Anchor
+
+    f1 = make_frame(10, "h1")     # 同页且相邻，会被剪掉
+    f2 = make_frame(25, "h2")     # 同簇代表，信息量更高
+    f3 = make_frame(400, "h3")    # 另一段内容
+    records = [
+        {"kind": "板书", "useful": True, "info": 2, "page": "同一块黑板", "title": "t", "points": ["a"]},
+        {"kind": "板书", "useful": True, "info": 5, "page": "同一块黑板", "title": "t", "points": ["a", "b", "c"]},
+        {"kind": "板书", "useful": True, "info": 3, "page": "另一块黑板", "title": "t", "points": ["d"]},
+    ]
+    chunk = run_caption([f1, f2, f3], records)
+    chunk.anchors = [Anchor(start=8, end=12, frame_ts=10, frame_path=f1.path,
+                             speech="这一句对应第一张")]
+    stats = FC.prune([chunk])
+    kept = [round(f.ts) for f in chunk.frames]
+    ok(10 not in kept, f"信息量低的被剪掉（实际 {kept}）")
+    ok(25 in kept, "同簇代表留下")
+    ok(chunk.anchors[0].frame_ts == 25,
+       f"锚点重挂到幸存的帧（实际 {chunk.anchors[0].frame_ts}）")
+    ok(stats.get("reattached", 0) == 1, f"统计到 1 处重挂（实际 {stats}）")
+    ok(chunk.anchors[0].frame_path == f2.path, "锚点的帧路径也一起改了")
 
 
 def test_all_useless_keeps_one() -> None:
@@ -137,6 +188,8 @@ if __name__ == "__main__":
     test_prune_drops_and_dedupes()
     test_unjudged_untouched()
     test_keep_same_page_when_later_more_complete()
+    test_same_page_far_apart_both_kept()
+    test_anchors_reattached_after_prune()
     test_all_useless_keeps_one()
     print()
     if FAILED:
