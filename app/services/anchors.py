@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..core.models import Anchor, Chunk, Frame, SceneSpan, Segment
 from ..core.paths import fmt_ts
@@ -332,6 +332,182 @@ def refresh_screens(chunks: list[Chunk]) -> None:
             a.frame_path = frame.path
 
 
+def _pair_anchors(anchors: list[Anchor]) -> list[dict[str, Any]]:
+    """把「只有画面」的锚点并进它时间范围内的「有讲解」锚点。
+
+    课堂 / 幻灯片类视频抽不出稳定画面段（每一帧都是 0.1 秒的孤立点），
+    而口播是长区间（00:00–00:27）。两边各挂各的，模型拿到的材料就变成
+    「一堆只有时间码的空行 + 几段孤立的讲解」，于是如实写下
+    「材料未提及具体讲解内容，仅标注了画面时间点 00:06」
+    （实测 8 分钟 P/NP 那条笔记就是这个毛病）。
+
+    合并后每条材料都是「这段时间讲了 X，画面上是 Y」，模型才有东西可写。
+    """
+    ordered = sorted(anchors, key=lambda a: (a.start, a.frame_ts))
+    speech_ones = [a for a in ordered if a.speech]
+    screen_ones = [a for a in ordered if not a.speech and a.screen]
+    used: set[int] = set()
+
+    items: list[dict[str, Any]] = []
+    for a in speech_ones:
+        # 这段讲解期间出现过的画面文字（同一页反复出现时只留首尾两张）
+        picked: list[Anchor] = []
+        for s in screen_ones:
+            if id(s) in used:
+                continue
+            t = s.frame_ts if s.frame_ts > 0 else s.start
+            if a.start - 2.0 <= t <= a.end + 2.0:
+                picked.append(s)
+        screens: list[str] = []
+        for s in picked:
+            used.add(id(s))
+            text = s.screen.strip()
+            if text and text not in screens:
+                screens.append(text)
+        # 同一页讲了 10 分钟，开头和结尾各留一份，模型能看出画面推进
+        screen_text = "\n".join(screens[:2])
+        items.append({
+            "head": f"[{fmt_ts(a.start)}–{fmt_ts(a.end)}｜画面 {fmt_ts(a.frame_ts)}]",
+            "screen": f"【画面】{screen_text}" if screen_text else "",
+            "speech": f"【讲解】{a.speech}",
+        })
+
+    # 没被吸收的「只有画面」锚点：画面本身是知识点，单独留着
+    last_text = ""
+    for a in ordered:
+        if id(a) in used or not a.screen:
+            continue
+        text = a.screen.strip()
+        if text and text == last_text:
+            continue          # 同一屏连续出现，合并成一条
+        last_text = text
+        items.append({
+            "head": f"[{fmt_ts(a.start)}–{fmt_ts(a.end)}｜画面 {fmt_ts(a.frame_ts)}]",
+            "screen": f"【画面】{text}",
+            "speech": "",
+        })
+
+    items.sort(key=lambda it: it["head"])
+    return items
+
+
+def _render_items(items: list[dict[str, Any]], max_chars: int) -> str:
+    """按内容需求分配预算：讲解优先，画面其次，每条都有保底。
+
+    以前是「每条平分预算」，锚点一多（课堂视频能有 80 多个）就平分到
+    每人 20 字，正文被砍光；再不行就走兜底只留时间码 —— 模型收到的是一片
+    空白，只能如实写「材料未提及」。
+
+    现在的规则：
+    1. 每条先给保底（画面 8 字、讲解 8 字），保证时间码和标签都还在；
+    2. 余量按各条的内容长度按比例分；
+    3. 一条之内讲解占大头（画面最多 40%），口播是主体；
+    4. 总字数严格不超 max_chars。
+    """
+    items = [it for it in items if it["screen"] or it["speech"]]
+    if not items:
+        return ""
+    n = len(items)
+
+    def head_cost(it: dict[str, Any]) -> int:
+        return len(it["head"]) + 3      # 标题 + 换行 + 分隔
+
+    room = max_chars - sum(head_cost(it) for it in items)
+    if room <= 0:
+        # 连标题都放不下：只保留内容最实的几条
+        keep = sorted(range(n),
+                      key=lambda i: -(len(items[i]["speech"]) + len(items[i]["screen"])))[:8]
+        alloc = {i: (10 ** 6, 10 ** 6) for i in keep}
+        return _render_with(items, alloc)
+
+    # 1) 保底
+    base_s: dict[int, int] = {}
+    base_p: dict[int, int] = {}
+    for i, it in enumerate(items):
+        base_s[i] = 8 if it["screen"] else 0
+        base_p[i] = 8 if it["speech"] else 0
+    base_total = sum(base_s.values()) + sum(base_p.values())
+    if base_total > room:
+        scale = room / base_total
+        base_s = {i: max(1, int(v * scale)) for i, v in base_s.items() if v}
+        base_p = {i: max(1, int(v * scale)) for i, v in base_p.items() if v}
+        base_total = sum(base_s.values()) + sum(base_p.values())
+
+    # 2) 余量按需求长度按比例分
+    need = {i: max(0, len(items[i]["screen"]) - base_s.get(i, 0))
+               + max(0, len(items[i]["speech"]) - base_p.get(i, 0))
+            for i in range(n)}
+    total_need = sum(need.values())
+    extra = max(0, room - base_total)
+    if extra > 0 and total_need > 0:
+        give = min(extra, total_need)
+        add = {i: give * need[i] // total_need for i in range(n)}
+    else:
+        add = {i: 0 for i in range(n)}
+
+    # 3) 拆给画面/讲解：讲解占大头，画面最多 40%
+    alloc: dict[int, tuple[int, int]] = {}
+    for i, it in enumerate(items):
+        total = base_s.get(i, 0) + base_p.get(i, 0) + add.get(i, 0)
+        sc, sp = it["screen"], it["speech"]
+        if sc and sp:
+            sc_b = min(len(sc), int(total * 0.4))
+            sp_b = min(len(sp), total - sc_b)
+            if sp_b < 8:
+                sp_b = min(len(sp), 8)
+                sc_b = min(len(sc), max(0, total - sp_b))
+        elif sc:
+            sc_b, sp_b = min(len(sc), total), 0
+        else:
+            sc_b, sp_b = 0, min(len(sp), total)
+        alloc[i] = (sc_b, sp_b)
+
+    material = _render_with(items, alloc)
+    # 4) 仍超预算：按比例削（画面先削），但每条至少留标题和 8 字正文
+    for _ in range(10):
+        over = len(material) - max_chars
+        if over <= 0:
+            break
+        victims = [i for i, (sc, sp) in alloc.items() if sc > 8]
+        if not victims:
+            break
+        for i in victims:
+            cut = min(alloc[i][0] - 8, max(1, over // len(victims)))
+            alloc[i] = (alloc[i][0] - cut, alloc[i][1])
+            over -= cut
+        material = _render_with(items, alloc)
+        if len(material) <= max_chars:
+            return material
+    for _ in range(10):
+        over = len(material) - max_chars
+        if over <= 0:
+            break
+        victims = [i for i, (sc, sp) in alloc.items() if sp > 8]
+        if not victims:
+            break
+        for i in victims:
+            cut = min(alloc[i][1] - 8, max(1, over // len(victims)))
+            alloc[i] = (alloc[i][0], alloc[i][1] - cut)
+            over -= cut
+        material = _render_with(items, alloc)
+        if len(material) <= max_chars:
+            return material
+    return material[:max_chars]
+
+
+def _render_with(items: list[dict[str, Any]], alloc: dict[int, tuple[int, int]]) -> str:
+    lines: list[str] = []
+    for i, it in enumerate(items):
+        scr_bud, sp_bud = alloc.get(i, (0, 0))
+        screen = it["screen"][:scr_bud] if scr_bud else ""
+        speech = it["speech"][:sp_bud] if sp_bud else ""
+        body = "\n".join(x for x in (screen, speech) if x)
+        if not body:
+            continue
+        lines.append(f"{it['head']}\n{body}")
+    return "\n\n".join(lines)
+
+
 def anchor_material(chunk: Chunk, max_chars: int = 2600) -> str:
     """把块的锚点渲染成按时间顺序的成对材料。
 
@@ -341,48 +517,9 @@ def anchor_material(chunk: Chunk, max_chars: int = 2600) -> str:
 
     一页 PPT 讲很久时块里可能有十几个锚点。不能直接 `[:max_chars]` 截尾，
     那样后面的知识点会整段消失（用户要求「有用的信息不要漏」）。
-    这里先按锚点数平分预算、逐个压缩正文，保证每组的画面时间码都在。
+    这里先配对（画面 + 同期讲解）、再按内容长度分预算，讲解优先。
     """
-    items: list[tuple[str, str, str]] = []
-    for a in chunk.anchors:
-        head = f"[{fmt_ts(a.start)}–{fmt_ts(a.end)}｜画面 {fmt_ts(a.frame_ts)}]"
-        screen = f"【画面】{a.screen}" if a.screen else ""
-        if a.speech:
-            speech = f"【讲解】{a.speech}"
-        elif not a.screen:
-            speech = "【讲解】（这段时间没有可识别的人声）"
-        else:
-            speech = ""
-        items.append((head, screen, speech))
-
+    items = _pair_anchors(chunk.anchors)
     if not items:
         return ""
-
-    def render(limit: int) -> str:
-        lines: list[str] = []
-        for head, screen, speech in items:
-            body = "\n".join(x for x in (screen, speech) if x)
-            if len(body) <= limit:
-                lines.append(f"{head}\n{body}")
-                continue
-            # 画面和口播各留一半：预算再紧也不能把博主的无字幕分析挤没
-            half = max(10, (limit - 10) // 2)
-            lines.append(f"{head}\n" + "\n".join(
-                x[:half] for x in (screen, speech) if x
-            ))
-        return "\n\n".join(lines)
-
-    full = render(10 ** 9)
-    if len(full) <= max_chars:
-        return full
-
-    head_cost = sum(len(h) + 3 for h, _, _ in items)
-    budget = max(24, (max_chars - head_cost) // len(items))
-    material = render(budget)
-    while len(material) > max_chars and budget > 12:
-        budget = max(12, int(budget * 0.8))
-        material = render(budget)
-    if len(material) > max_chars:
-        # 极端兜底：宁可只留每组的时间码，也不砍掉后面的知识点
-        material = "\n\n".join(h for h, _, _ in items)[:max_chars]
-    return material
+    return _render_items(items, max_chars)

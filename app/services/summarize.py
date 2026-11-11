@@ -50,6 +50,8 @@ _CHUNK_TMPL = """视频《{title}》的片段，时间 {start} 至 {end}。
 }}
 要求：
 - bullets 3-6 条，必须是材料中真实出现的信息；讲解里的补充、分析、语法点也要写进要点，不能只抄画面上的字；
+- **绝不要写「材料未提及…」「材料中没有…」这类话**：材料就是全部依据，
+  没提到就是这段确实没讲那么多，只写实际有的内容，写不出来就少写一条；
 - bullet_ts 与 bullets 一一对应，每条写它讲的那组方括号里的「画面 MM:SS」，照抄材料里的时间码，不要自己编；
   一条要点综合了多组材料就取最主要那一组；keywords 2-5 个。"""
 
@@ -114,6 +116,11 @@ _OUTLINE_TMPL = """你在为视频《{title}》（UP主 {uploader}，时长 {dur
 {material}
 
 请把它**重组成结构化笔记**，严格遵守：
+
+【零、只写材料里真实有的内容】
+禁止写「材料未提及…」「材料中没有…」「仅标注了画面时间点」这类话——
+材料就是全部依据，没提到就是这段确实没讲那么多。写不出来就少写一条，
+不要用占位句凑数。
 
 【一、只留信息，丢掉对话】
 寒暄、口头禅、语气词、主播与嘉宾的客套、重复表达、与主题无关的闲聊，全部删除。
@@ -350,7 +357,7 @@ def build_outline(
     client: LLMClient | None,
     meta: VideoMeta,
     chunks: list[Chunk],
-    max_chars_per_chunk: int = 1400,
+    max_chars_per_chunk: int = 2600,
     note_detail: str = "standard",
 ) -> tuple[list[dict[str, Any]], list[str], list[Problem]]:
     """把时间线材料重组成「主题 → 子主题 → 要点」的结构。
@@ -506,7 +513,7 @@ def summarize_chunks(
         # 音画锚定材料：按时间排好的「这一帧画面 + 这段时间博主说的话」。
         # 旧任务缓存 / 抽帧失败时 anchors 为空，退回原来「讲解 + 画面文字」两坨文本。
         if chunk.anchors:
-            material = anchors_mod.anchor_material(chunk, max_chars=2800)
+            material = anchors_mod.anchor_material(chunk, max_chars=3600)
         else:
             screen = "\n".join(frame_caption.chunk_screen_lines(chunk, with_ts=True))
             material = (
