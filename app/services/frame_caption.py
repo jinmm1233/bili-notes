@@ -89,6 +89,14 @@ _JUDGE_RULES = (
     "- page：这一页画面的标识。**同一页要输出完全相同的字符串**（用页面标题或"
     "最显著的那行字，例如 \"§9.3 电场 电场强度\"）；换页就必须不同。"
     "没有页面概念的（实拍、人物、空镜）填空字符串。\n"
+    "  ⚠️ 判「同一页」要**看画面上的内容**，不要看版式：PPT 模板都一样，"
+    "但每页的标题/正文不同就不是同一页；反过来同一页连拍好几张、"
+    "版式一模一样但内容有增补（板书写到后面），那还是同一页。\n"
+    "\n"
+    "【重复的画面怎么标】同一页课件停留很久时会连拍好几张，内容完全一样。"
+    "这时**只保留内容最全的那一张**（标题最完整、要点最多的那张），"
+    "其余几张照样给出 title/points（方便核对），但把 info 设为 0 —— "
+    "表示这一帧可以丢掉。板书内容在增长的**不算重复**，每张都要保留。"
 )
 
 _CAPTION_SYSTEM = (
@@ -105,6 +113,27 @@ _SYSTEM = (
     "你是视频笔记助手，负责从视频画面里「有选择地」提取文字要点。\n"
     "我会给你一张画面截图，这一段的【讲解文字】（语音转写，可能有错别字），"
     "以及 OCR 识别到的【文字线索】（行列顺序可能乱、可能断行缺字，仅供比对）。\n\n"
+    + _COMMON_RULES
+    + _JUDGE_RULES
+    + "\n"
+    + _JSON_SPEC
+)
+
+_SYSTEM = (
+    "你是视频笔记助手，负责从视频画面里「有选择地」提取文字要点。\n"
+    "我会给你一张画面截图，这一段的【讲解文字】（语音转写，可能有错别字），"
+    "以及 OCR 识别到的【文字线索】（行列顺序可能乱、可能断行缺字，仅供比对）。\n\n"
+    + _COMMON_RULES
+    + _JUDGE_RULES
+    + "\n"
+    + _JSON_SPEC
+)
+
+_SYSTEM_MULTI = (
+    "你是视频笔记助手，负责从视频画面里「有选择地」提取文字要点。\n"
+    "我会一次给你同一段里的**多张画面截图**（按时间先后排），"
+    "以及这段的【讲解文字】（语音转写，可能有错别字），"
+    "和每张的【OCR 文字线索】（行列顺序可能乱、可能断行缺字，仅供比对）。\n\n"
     + _COMMON_RULES
     + _JUDGE_RULES
     + "\n"
@@ -167,6 +196,9 @@ def _apply(frame: Frame, rec: dict[str, Any]) -> bool:
         frame.useful = useful
     if 0 <= info <= 9:
         frame.info_level = info
+    # 判过了（哪怕 info=0）：后面 prune 才知道能按模型结论处理
+    if kind or page or isinstance(useful, bool) or rec.get("info") is not None:
+        frame.judged = True
 
     title = str(rec.get("title") or "").strip()[:40]
     points = [
@@ -217,92 +249,117 @@ def _page_norm(key: str) -> str:
 
 
 def prune(chunks: list[Chunk]) -> dict[str, int]:
-    """按视觉模型的判断剔帧：没用的删掉、同一页且时间相邻的只留信息量最高的那张。
+    """按视觉模型的判断剔帧：没用的删掉、**同一页只留内容最全的那一张**。
 
-    只处理**判过**的帧（info_level > 0）。没配视觉模型时整篇都是 0，
+    只处理**模型判过**的帧（frame.judged）。没配视觉模型时全是 False，
     这一步等于不生效，行为与以前完全一致。
 
-    为什么用 page_key 而不是 pHash：老师站在黑板前走动时，整帧 pHash 会差 6-8 位，
-    按像素判定认不出「同一页」；模型能直接读出这是同一块黑板、同一行标题。
+    判据（都以模型对**画面内容**的判断为准）：
+    1. useful=false → 删（纯人物、空镜、翻页糊帧）
+    2. 模型判了但 info=0 → 删（它说这一帧没信息）
+    3. 同一 page_key → 只留信息量最高、要点最多的那一张
 
-    为什么必须带时间窗（_DUP_WINDOW）：整节课都在同一块黑板上写时，模型对每帧
-    都给同一个 page_key。按「同页只留一张」去重，24 张会掉到 7 张，
-    后面几个知识点的配图全部落空。同页但相隔较远 → 内容不同，各留各的。
+    第 3 条就是用户要的：「一个 PPT 页面出一张图，然后把这一页的内容说清楚」。
+    后面那张如果内容更全，前面的就可以不要（用户原话）。
+    板书也是同理 —— 一节课在同一块黑板上，最后那张写得最全，
+    前面那些被它涵盖，留着只是重复占版面。
+
+    为什么不能靠 pHash：PPT 模板一模一样，pHash 分不出「同一页」，
+    实测 245 张图会被聚成 21 组、其中一组 216 张 —— 整页课件全被当成同一页。
+    判断同一页必须看画面**内容**（标题、正文、要点），这正是视觉模型擅长的。
+
+    为什么去重要跨块：同一页 PPT 停留 2 分钟会横跨好几个知识块，
+    只在块内去重的话，同一页在每个块里各留一张 —— 这就是「一个 PPT 页面
+    出来好几张图」的由来。
+
+    后面知识点没图怎么办：剪枝后会把锚点全部重挂到幸存的那张上
+    （_reattach_anchors），所以内容一条都不丢，只是共用一张图。
     """
     from . import frames as _frames_mod  # 延迟导入：避免与 frames 循环依赖
 
     dropped_useless = 0
     dropped_dup = 0
     reattached = 0
+
+    # ---- 第 1 遍：全局收集，按 page 分组（跨块）----
+    page_frames: dict[str, list[Frame]] = {}
+    page_by_path: dict[str, str] = {}
+    page_by_ts: dict[float, str] = {}
+    for chunk in chunks:
+        for frame in chunk.frames:
+            if not frame.judged:
+                continue
+            key = _page_norm(frame.page_key)
+            if not key:
+                continue
+            page_by_path[frame.path] = key
+            page_by_ts[round(frame.ts, 2)] = key
+            page_frames.setdefault(key, []).append(frame)
+
+    # 每一页只留一张：内容最全的那张（信息量最高、要点最多、最后拍到）
+    best_by_page: dict[str, Frame] = {}
+    for key, frames in page_frames.items():
+        candidates = [f for f in frames if f.info_level > 0] or frames
+        best_by_page[key] = max(
+            candidates,
+            key=lambda f: (f.info_level, len(f.screen_points or []), f.ts))
+
     for chunk in chunks:
         if not chunk.frames:
             continue
-        judged = [f for f in chunk.frames if f.info_level > 0]
-        if not judged:
+        if not any(f.judged for f in chunk.frames):
             continue
         keep: list[Frame] = []
-        # page -> 簇；每簇内的帧时间相邻、属于同一页，只留一个代表
-        clusters: dict[str, list[list[Frame]]] = {}
-        page_by_path: dict[str, str] = {}
-        page_by_ts: dict[float, str] = {}
 
         for frame in chunk.frames:
-            if frame.info_level <= 0:       # 没判过 → 保持原样（像素去重仍然生效）
+            if not frame.judged:
+                # 没判过 → 保持原样（像素去重仍然生效）
                 if any(_frames_mod._same_page(frame, k) for k in keep if k.phash):
                     dropped_dup += 1
                     continue
                 keep.append(frame)
                 continue
-            key = _page_norm(frame.page_key)
-            page_by_path[frame.path] = key
-            page_by_ts[round(frame.ts, 2)] = key
+
             if not frame.useful:
                 dropped_useless += 1
+                continue
+            # 模型判了但说没信息（info=0）→ 这帧可以丢
+            if frame.info_level <= 0:
+                dropped_dup += 1
                 continue
             # 模型说有用、但类型是空镜/人物且信息量极低 —— 兜一道，防止它手滑
             if frame.kind in _DROP_KINDS and frame.info_level <= 2:
                 dropped_useless += 1
                 continue
-            if not key:
-                keep.append(frame)
-                continue
-            bucket = clusters.setdefault(key, [])
-            # 跟「簇的第一张」比距离，而不是跟上一张比：否则 0s/37s/74s 会链式合并，
-            # 一节课的画面被一路吃光。
-            target: list[Frame] | None = None
-            for cl in bucket:
-                if abs(frame.ts - cl[0].ts) <= _DUP_WINDOW:
-                    target = cl
-                    break
-            if target is None:
-                bucket.append([frame])
-            else:
-                target.append(frame)
+            key = _page_norm(frame.page_key)
+            if key:
+                best = best_by_page.get(key)
+                if best is not None and best is not frame:
+                    # 同一页的另一张内容更全 → 这张可以不要了
+                    dropped_dup += 1
+                    continue
+            keep.append(frame)
 
-        # 每簇只留代表帧（信息量最高，一样高就留靠后的）
-        final: list[Frame] = []
-        seen_ids: set[int] = set()
-
-        def _add(frame: Frame) -> None:
-            if id(frame) not in seen_ids:
-                seen_ids.add(id(frame))
-                final.append(frame)
-
-        for frame in keep:
-            _add(frame)
-        for bucket in clusters.values():
-            for cl in bucket:
-                best = max(cl, key=lambda f: (f.info_level, f.ts))
-                _add(best)
-                dropped_dup += len(cl) - 1
-        keep = sorted(final, key=lambda f: f.ts)
-        # 兜底：整块都被判成没用时（纯人像讲解、全片空镜），至少留一张最像样的。
-        # 否则那一节在笔记里完全没画面，读者对不上时间码。
+        keep.sort(key=lambda f: f.ts)
+        # 兜底：整块都被剔空了（纯人像讲解、全片空镜，或这一块的画面
+        # 都是同一页的重复帧），至少要留一张，否则那一节完全没画面。
+        # 留的是**那一页最全的那张**（可能不在本块），而不是把刚剔掉的重复帧放回去。
         if not keep:
-            keep = [max(chunk.frames, key=lambda f: (f.info_level, f.sharpness, f.ts))]
-            log.info("整块无可用画面，保留信息量最高的一张（%s）", fmt_ts(keep[0].ts))
+            fallback = None
+            for f in chunk.frames:
+                key = _page_norm(f.page_key)
+                if key and key in best_by_page:
+                    cand = best_by_page[key]
+                    if fallback is None or (cand.info_level, cand.ts) > (fallback.info_level, fallback.ts):
+                        fallback = cand
+            if fallback is None:
+                fallback = max(chunk.frames,
+                               key=lambda f: (f.info_level, f.sharpness, f.ts))
+            keep = [fallback]
+            log.info("整块无可用画面，保留最全的一张（%s）", fmt_ts(keep[0].ts))
         chunk.frames = keep
         reattached += _reattach_anchors(chunk, keep, page_by_path, page_by_ts)
+
     if dropped_useless or dropped_dup:
         log.info("画面判断：剔掉无信息 %d 张、同页重复 %d 张", dropped_useless, dropped_dup)
     if reattached:
@@ -381,12 +438,14 @@ def caption_frames(
         return 0
 
     # 详细档一节课可能上百张图，而视觉模式是「一帧一次请求」——不限流会跑几小时。
-    # 超过阈值就退回文字模式：OCR 原文 + 讲解补全，要点照样有，只是不"看图"。
-    if (vision_client and settings.vision_max_frames
-            and total_frames > settings.vision_max_frames):
-        log.warning("关键帧 %d 张超过视觉模式上限 %d，本次改用文字模式提炼画面要点",
-                    total_frames, settings.vision_max_frames)
-        vision_client = None
+    #
+    # 但不能因为总数超了就整片退回文字模式：75 分钟的课有 475 张关键帧，
+    # 整片退回后 prune 的「同页判定」只能靠 OCR 瞎猜，会把真正不同的页面
+    # 当成同一页剔掉（实测一次误剔 230 张），同一页 PPT 反而出了好几张。
+    # 正确做法是**分批**：每批 vision_max_frames 张，逐批走视觉模式。
+    if vision_client and not settings.vision_max_frames:
+        # 上限设成 0 = 不限流，按批处理也照样分（批大小取默认）
+        pass
 
     mode = "视觉" if vision_client else "文字"
     log.info("画面要点提炼开始（%s模式）：%d 块 / %d 张图", mode, len(todo), total_frames)
@@ -394,8 +453,11 @@ def caption_frames(
     for chunk in todo:
         if cancel and cancel():
             break
-        caps = (_notes_with_vision(vision_client, chunk, settings) if vision_client
-                else _notes_with_text(text_client, chunk, settings))
+        if vision_client:
+            caps = _notes_with_vision_batched(
+                vision_client, chunk, settings, cancel=cancel)
+        else:
+            caps = _notes_with_text(text_client, chunk, settings)
 
         for i, frame in enumerate(chunk.frames, 1):
             if rec := caps.get(i):
@@ -411,6 +473,37 @@ def caption_frames(
     n = sum(1 for c in chunks for f in c.frames if f.screen_points or f.screen_title)
     log.info("画面要点提炼完成：%d 张取到内容", n)
     return n
+
+
+def _notes_with_vision_batched(
+    client: LLMClient,
+    chunk: Chunk,
+    settings: Settings,
+    cancel: CancelFn | None = None,
+) -> dict[int, dict[str, Any]]:
+    """视觉模式 + 分批：一次批里若干帧一起看图，批与批之间可以中断。
+
+    一帧一次请求太慢（475 张要发 475 次），一次 80 张会把上下文撑爆。
+    这里每批 vision_batch 张（默认 8），批内并行不了但请求数降到 1/8。
+
+    批不能太小：判断「同一页的重复画面」需要模型同时看到好几帧才比得出来。
+    也不能太大：图片多�� token 多，模型会漏掉后面的帧。
+    """
+    frames = chunk.frames
+    if not frames:
+        return {}
+    per_batch = max(4, min(settings.vision_max_frames or 8, 12))
+    out: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(frames), per_batch):
+        if cancel and cancel():
+            break
+        batch = frames[start:start + per_batch]
+        mini = copy.copy(chunk)
+        mini.frames = batch
+        caps = _notes_with_vision(client, mini, settings)
+        for j, rec in caps.items():
+            out[start + j] = rec
+    return out
 
 
 def chunk_screen_lines(chunk: Chunk, with_ts: bool = False) -> list[str]:
@@ -488,54 +581,86 @@ def _parse_caps(
 def _notes_with_vision(
     client: LLMClient, chunk: Chunk, settings: Settings | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """视觉模式：每帧一次请求，模型真正"看"图。失败的单帧退回文字模式兜底。"""
+    """视觉模式：一次请求看多帧，让模型跨帧比较。
+
+    为什么要「多帧一次」而不是一帧一次：
+    - 「这是不是同一页」「后面这帧是不是把前面那页的内容又讲了一遍」，
+      单看一帧根本判断不出来，必须让模型把几帧摆在一起比；
+    - 475 张关键帧一帧一次就是 475 次请求，CPU 也扛不住，跑几小时。
+
+    批内每帧都返回一条记录（index 对应帧序号），带 kind/useful/info/page/title/points。
+    """
     out: dict[int, dict[str, Any]] = {}
+    frames = [f for f in chunk.frames if f.path]
+    if not frames:
+        return out
+
+    images: list[tuple[bytes, str]] = []
+    valid: list[tuple[int, Frame]] = []
     for i, frame in enumerate(chunk.frames, 1):
         if not frame.path:
             continue
         data, mime = _shrink_jpeg(frame.path)
         if not data:
             continue
-        ocr = (frame.ocr_text or "").strip()
-        ocr_hint = ocr[:300] + ("…" if len(ocr) > 300 else "") if ocr else "（无）"
-        user = (
-            f"【讲解文字】{chunk.text[:1000]}\n"
-            f"【文字线索】{ocr_hint}\n"
-            f"请提取画面{i}（第{int(frame.ts)}秒）上的文字要点，只返回约定格式的 JSON。"
-        )
-        detailed = getattr(settings, "note_detail", "") == "detailed"
-        try:
-            caps: list[dict[str, Any]] = []
-            for attempt in range(2):
-                # 视觉模型偶尔会吐一段说明文字而不是 JSON（实测 6 张里挂 1 张）。
-                # 不重试的话这帧就"没判过"，后面的同页去重会漏掉它，白留一张重复图。
-                raw = client.complete_vision(
-                    _SYSTEM + _density_note(settings)
-                    + ("\n\n⚠️ 上一次返回的不是合法 JSON。这次只输出 JSON，不要任何解释。"
-                       if attempt else ""),
-                    user, [(data, mime)],
-                    max_tokens=1300 if detailed else 900,
-                )
-                caps = parse_json_loose(raw).get("captions") or []
-                if caps:
-                    break
-                log.info("画面判断返回非 JSON，重试一次（帧 %s）", frame.path)
-            for rec in caps:
-                if not isinstance(rec, dict):
-                    continue
-                # 有文字要点、或者有画面判断（useful/info/kind）都要收：
-                # 空镜/人物这类帧本来就没有文字，但「它没用」这个结论必须落下来，
-                # 否则 prune 看不到判断，照样会把人物特写放进笔记。
-                has_text = (str(rec.get("title") or "").strip()
-                            or any(str(p).strip() for p in (rec.get("points") or [])))
-                has_judge = bool(rec.get("kind") or rec.get("page")
-                                 or rec.get("useful") is not None or rec.get("info"))
-                if has_text or has_judge:
-                    out[i] = rec
-                    break
-        except Exception as exc:  # noqa: BLE001
-            log.warning("看图提炼失败（帧 %s），退回文字线索：%s", frame.path, exc)
-            out.update(_notes_with_text(client, _single_chunk(chunk, i), settings))
+        images.append((data, mime))
+        valid.append((i, frame))
+    if not images:
+        return out
+
+    detailed = getattr(settings, "note_detail", "") == "detailed"
+    lines: list[str] = [f"【讲解文字】{chunk.text[:1200]}", ""]
+    for i, frame in valid:
+        ocr = (frame.ocr_text or "").strip().replace("\n", " / ")
+        ocr_hint = ocr[:200] + ("…" if len(ocr) > 200 else "") if ocr else "（无）"
+        lines.append(f"画面{i}（第{int(frame.ts)}秒）OCR文字：{ocr_hint}")
+    lines.append("")
+    lines.append(
+        f"以上共 {len(valid)} 张画面，按顺序给出。你要同时看这些图，"
+        f"判断它们分别是什么、每帧有没有值得留存的信息、"
+        f"**哪些帧是同一页课件的重复**（PPT 页面停留很久时会连拍好几张，"
+        f"内容一样；板书内容在增长就不算重复）。"
+        f"重复的那几帧，只保留**内容最全的那一张**（其余的 page 字段填它的 page 标识，"
+        f"并把 info 设为 0 表示可以丢掉）。只返回约定格式的 JSON。"
+    )
+    user = "\n".join(lines)
+
+    try:
+        caps: list[dict[str, Any]] = []
+        for attempt in range(2):
+            # 视觉模型偶尔会吐一段说明文字而不是 JSON（实测 6 张里挂 1 张）。
+            raw = client.complete_vision(
+                _SYSTEM_MULTI + _density_note(settings)
+                + ("\n\n⚠️ 上一次返回的不是合法 JSON。这次只输出 JSON，不要任何解释。"
+                   if attempt else ""),
+                user, images,
+                max_tokens=2600 if detailed else 1800,
+            )
+            caps = parse_json_loose(raw).get("captions") or []
+            if caps:
+                break
+            log.info("画面判断返回非 JSON，重试一次（%d 帧）", len(valid))
+        for rec in caps:
+            if not isinstance(rec, dict):
+                continue
+            try:
+                idx = int(rec.get("index", 0))
+            except (TypeError, ValueError):
+                idx = 0
+            if idx <= 0 or idx > len(chunk.frames):
+                continue
+            # 有文字要点、或者有画面判断（useful/info/kind）都要收：
+            # 空镜/人物这类帧本来就没有文字，但「它没用」这个结论必须落下来，
+            # 否则 prune 看不到判断，照样会把人物特写放进笔记。
+            has_text = (str(rec.get("title") or "").strip()
+                        or any(str(p).strip() for p in (rec.get("points") or [])))
+            has_judge = bool(rec.get("kind") or rec.get("page")
+                             or rec.get("useful") is not None or rec.get("info"))
+            if has_text or has_judge:
+                out[idx] = rec
+    except Exception as exc:  # noqa: BLE001
+        log.warning("看图提炼失败（%d 帧），退回文字线索：%s", len(valid), exc)
+        out.update(_notes_with_text(client, _single_chunk(chunk, 1), settings))
     return out
 
 

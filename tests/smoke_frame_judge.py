@@ -39,23 +39,32 @@ def make_frame(ts: float, name: str) -> Frame:
 
 
 class FakeVision:
-    """按 index 依次返回预设记录。"""
+    """按图片张数返回预设记录（一次请求可能带多张图）。
+
+    现在视觉模式是「一次请求看一批帧」，返回的每条记录带 index（帧序号）。
+    records 少于图片张数时，多出来的帧不给判断（模拟模型漏判）。
+    """
 
     def __init__(self, records: list[dict]):
         self.records = records
         self.calls = 0
 
     def complete_vision(self, system, user, images, max_tokens=900):
-        rec = self.records[self.calls] if self.calls < len(self.records) else {}
+        n = len(images)
+        caps = []
+        for i in range(n):
+            if i < len(self.records):
+                caps.append(dict(self.records[i], index=i + 1))
         self.calls += 1
-        return json.dumps({"captions": [dict(rec, index=1)]}, ensure_ascii=False)
+        return json.dumps({"captions": caps}, ensure_ascii=False)
 
 
 def run_caption(frames: list[Frame], records: list[dict]) -> Chunk:
     chunk = Chunk(index=0, start=0, end=600, text="这一段讲电场强度", frames=frames)
     st = Settings()
     st.frame_captions = True
-    FC.caption_frames(FakeVision(records), [chunk], st, vision_client=FakeVision(records))
+    fake = FakeVision(records)
+    FC.caption_frames(fake, [chunk], st, vision_client=fake)
     return chunk
 
 
@@ -125,7 +134,7 @@ def test_same_page_far_apart_both_kept() -> None:
     原来的「同页只留一张」把 24 张砍到 7 张，后半段知识点全无配图。
     板书会随时间累积，相隔较远的同一页承载的内容并不相同。
     """
-    print("\n--- 同页但相隔较远：各自保留 ---")
+    print("\n--- 同页但内容在增长：各自保留 ---")
     frames = [make_frame(t, f"k{t}") for t in (10, 60, 300, 600)]
     records = [
         {"kind": "板书", "useful": True, "info": 2, "page": "同一块黑板", "title": "板书", "points": ["a"]},
@@ -136,7 +145,60 @@ def test_same_page_far_apart_both_kept() -> None:
     chunk = run_caption(frames, records)
     FC.prune([chunk])
     kept = [round(f.ts) for f in chunk.frames]
-    ok(kept == [10, 60, 300, 600], f"四张都留着（实际 {kept}）")
+    # 新语义：同一页只留内容最全的那一张（信息量最高、要点最多的）。
+    # 用户原话：「后面有前面的重复内容，那前面的就可以考虑不要了」。
+    # 板书同理 —— 最后那张写得最全，前面那些被它涵盖。
+    ok(kept == [600], f"只留最全的那张（实际 {kept}）")
+
+
+def test_same_page_across_chunks_deduped() -> None:
+    """同一页 PPT 横跨多个知识块时，全片只留一张。
+
+    这是「一个 PPT 页面出来好几张图」的来源：原来只在块内去重，
+    同一页 PPT 停留两分钟跨了三块，每块各留一张。
+    """
+    print("\n--- 跨块的同一页 PPT：全片只留一张 ---")
+    c1 = Chunk(index=0, start=0, end=100, text="讲第一段", frames=[])
+    c2 = Chunk(index=1, start=100, end=200, text="讲第二段", frames=[])
+    c3 = Chunk(index=2, start=200, end=300, text="讲第三段", frames=[])
+    for i, c in enumerate((c1, c2, c3)):
+        c.frames = [make_frame(20 + i * 60, f"p{i}")]
+    recs = [
+        {"kind": "PPT", "useful": True, "info": 3, "page": "§3.2 寻址模式",
+         "title": "内存寻址模式", "points": ["普通模式", "带位移模式"]},
+        {"kind": "PPT", "useful": True, "info": 3, "page": "§3.2 寻址模式",
+         "title": "内存寻址模式", "points": ["普通模式", "带位移模式"]},
+        {"kind": "PPT", "useful": True, "info": 4, "page": "§3.2 寻址模式",
+         "title": "内存寻址模式", "points": ["普通模式", "带位移模式", "最通用形式"]},
+    ]
+    for c, rec in zip((c1, c2, c3), recs):
+        st = Settings(); st.frame_captions = True
+        fake = FakeVision([rec])
+        FC.caption_frames(fake, [c], st, vision_client=fake)
+    FC.prune([c1, c2, c3])
+    all_kept = [round(f.ts) for c in (c1, c2, c3) for f in c.frames]
+    # 三块都指向同一张代表帧（内容最全的那张，info=4 的那张）。
+    # 帧本身只有一个 —— 导出时同页只贴一次图。
+    uniq = sorted(set(all_kept))
+    ok(uniq == [140], f"全片只留 1 张不同的帧（实际 {all_kept}）")
+
+
+def test_model_marked_duplicate_dropped() -> None:
+    """模型把 info 标成 0（它认定这帧是同页重复）时，这帧要被剔掉。"""
+    print("\n--- 模型标记的重复帧被剔掉 ---")
+    frames = [make_frame(t, f"d{t}") for t in (10, 40, 70)]
+    records = [
+        {"kind": "PPT", "useful": True, "info": 4, "page": "同一页课件",
+         "title": "寄存器", "points": ["a", "b", "c"]},
+        {"kind": "PPT", "useful": True, "info": 0, "page": "同一页课件",
+         "title": "寄存器", "points": ["a", "b", "c"]},
+        {"kind": "PPT", "useful": True, "info": 0, "page": "同一页课件",
+         "title": "寄存器", "points": ["a", "b", "c"]},
+    ]
+    chunk = run_caption(frames, records)
+    FC.prune([chunk])
+    kept = [round(f.ts) for f in chunk.frames]
+    ok(kept == [10], f"只留信息量最高的那张（实际 {kept}）")
 
 
 def test_anchors_reattached_after_prune() -> None:
@@ -189,6 +251,8 @@ if __name__ == "__main__":
     test_unjudged_untouched()
     test_keep_same_page_when_later_more_complete()
     test_same_page_far_apart_both_kept()
+    test_same_page_across_chunks_deduped()
+    test_model_marked_duplicate_dropped()
     test_anchors_reattached_after_prune()
     test_all_useless_keeps_one()
     print()

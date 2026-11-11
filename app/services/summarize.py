@@ -362,6 +362,21 @@ def _density_note(level: str) -> str:
     return ""
 
 
+# 一次大纲调用最多带多少个知识块。
+# 60 块一次性丢进去，模型输出会被 max_tokens 截断（实测 75 分钟的课
+# 只写到 47:54，后面 27 分钟的内容和配图全丢）。
+# 15 块一批 → 每批约 4 分钟，输出量远低于 token 上限，覆盖得到全片。
+_OUTLINE_BLOCKS_PER_CALL = 15
+
+
+def _split_batches(chunks: list[Chunk], max_blocks: int = 15) -> list[list[Chunk]]:
+    """把知识块切成若干批，每批连续（时间上不跳）。"""
+    if not chunks:
+        return []
+    size = max(1, max_blocks)
+    return [chunks[i:i + size] for i in range(0, len(chunks), size)]
+
+
 def build_outline(
     client: LLMClient | None,
     meta: VideoMeta,
@@ -390,30 +405,59 @@ def build_outline(
             body += f"\n【画面】\n{screen[:600]}"
         return body
 
-    material = "\n\n".join(
-        f"=== [{fmt_ts(c.start)} - {fmt_ts(c.end)}] ===\n{_block(c)}"
-        for c in chunks
-    )
-
-    prompt = _OUTLINE_TMPL.format(
-        title=meta.title,
-        uploader=meta.uploader or "未知",
-        duration=fmt_ts(meta.duration),
-        material=material,
-    )
-    # 材料是外语时不点明，模型有时会"顺手"保留一整段原文
-    if is_foreign(material):
-        prompt += (
-            "\n\n【特别提示】上面的材料是外语原文（非中文）。"
-            "成稿必须是纯中文笔记，所有要点都要译过来；"
-            "只有专有名词、术语、作品名这类才在括号里附原文。"
-        )
-
     detailed = note_detail == "detailed"
-    data = client.complete_json(
-        _SYSTEM + _density_note(note_detail), prompt,
-        max_tokens=6144 if detailed else 4096,
-    )
+
+    # 长视频要分批：60 个知识块一次性丢给模型，输出会被 max_tokens 截断，
+    # 实测 75 分钟的课写到 47:54 就没了 —— 后面 27 分钟的内容整段没进笔记，
+    # 那一段的配图也自然全落空（assets 里写了图但笔记没引用）。
+    # 分批后每批独立成一份大纲，最后按时间顺序合并。
+    batches = _split_batches(chunks, max_blocks=_OUTLINE_BLOCKS_PER_CALL)
+    log.info("大纲分批：%d 块 → %d 批（每批约 %d 块）",
+             len(chunks), len(batches), _OUTLINE_BLOCKS_PER_CALL)
+
+    merged: dict[str, Any] = {"structure": [], "takeaways": [], "problems": []}
+    for bi, batch in enumerate(batches, 1):
+        material = "\n\n".join(
+            f"=== [{fmt_ts(c.start)} - {fmt_ts(c.end)}] ===\n{_block(c)}"
+            for c in batch
+        )
+        prompt = _OUTLINE_TMPL.format(
+            title=meta.title,
+            uploader=meta.uploader or "未知",
+            duration=fmt_ts(meta.duration),
+            material=material,
+        )
+        # 材料是外语时不点明，模型有时会"顺手"保留一整段原文
+        if is_foreign(material):
+            prompt += (
+                "\n\n【特别提示】上面的材料是外语原文（非中文）。"
+                "成稿必须是纯中文笔记，所有要点都要译过来；"
+                "只有专有名词、术语、作品名这类才在括号里附原文。"
+            )
+        if len(batches) > 1:
+            prompt += (
+                f"\n\n【这是第 {bi}/{len(batches)} 批】"
+                f"本次只覆盖 {fmt_ts(batch[0].start)} 到 {fmt_ts(batch[-1].end)} 这一段。"
+                f"只写这一段的内容，不要提前写后面还没出现的部分。"
+            )
+        try:
+            data = client.complete_json(
+                _SYSTEM + _density_note(note_detail), prompt,
+                max_tokens=6144 if detailed else 4096,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("大纲第 %d 批生成失败，跳过这一段：%s", bi, exc)
+            continue
+        for item in data.get("structure") or []:
+            if isinstance(item, dict):
+                merged["structure"].append(item)
+        for x in data.get("takeaways") or []:
+            if str(x).strip():
+                merged["takeaways"].append(x)
+        for x in data.get("problems") or []:
+            if isinstance(x, dict):
+                merged["problems"].append(x)
+    data = merged
 
     outline: list[dict[str, Any]] = []
     for item in data.get("structure") or []:

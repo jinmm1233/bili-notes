@@ -158,6 +158,10 @@ class Frame:
     useful: bool = True
     info_level: int = 0
     page_key: str = ""
+    # judged: 视觉模型有没有真的判过这帧。
+    # info_level=0 有两种含义——「模型判了但说没信息」和「压根没判过」，
+    # 两者处理方式不同（前者该剔，后者要保留），所以要分开记。
+    judged: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

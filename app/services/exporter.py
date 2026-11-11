@@ -400,6 +400,17 @@ def _screen_block(frame: Frame) -> list[str]:
     return []
 
 
+def _page_of(frame: Frame) -> str:
+    """一帧所属的「页」标识，用来判断两条要点是不是同一页 PPT。
+
+    模型给的 page_key 才是权威（它看的是画面内容）；没有时退回画面标题。
+    """
+    key = (getattr(frame, "page_key", "") or "").strip()
+    if not key:
+        key = (getattr(frame, "screen_title", "") or "").strip()
+    return "".join(ch for ch in key.lower() if ch not in " \t\r\n，。、：:；;·-—_()（）【】")[:40]
+
+
 def _render_shot(
     note: VideoNote,
     shot: tuple[Frame, str] | None,
@@ -472,11 +483,31 @@ def _render_outline(note: VideoNote, image_map: dict[int, str]) -> list[str]:
                 # 每条要点按**自己**的时刻找画面：这一帧没被选进笔记就不给图，
                 # 也不让这条要点去蹭上一条的图——蹭了就成了张冠李戴
                 # （真跑过一轮：标 03:28 的「well-dressed」上面贴着 03:04 的图）。
+                #
+                # 同一页 PPT 只出一次图：PPT 一页停留几分钟时，这一页会被
+                # 多个知识点引用。用户要的是「一张图 + 把这页内容说清楚」，
+                # 不是每条知识点都贴一张一样的图。
+                # 所以：这张图第一次出现时把画面要点（页面标题 + 全部要点）
+                # 完整写出来，后面同页的要点只留文字，不再重复贴图。
+                page_shot_done: set[str] = set()
                 for text, ts in zip(items, times):
                     result = shot({"ts": ts})
                     if result:
                         frame = result[0]
-                        lines.extend(_render_shot(note, result, with_caption=False))
+                        pkey = _page_of(frame)
+                        if pkey and pkey in page_shot_done:
+                            # 同一页已经贴过图：不再重复贴，
+                            # 但这一条要点仍然要写出来（图下面那块画面要点
+                            # 已经把这一页的内容说清楚了）。
+                            lines.append(_item_line(note, text, frame.ts))
+                            lines.append("")
+                            continue
+                        if pkey:
+                            page_shot_done.add(pkey)
+                        # 画面要点要带上：用户要的是「把这页 PPT 的内容说清楚」，
+                        # 光给一张图加一句话等于没讲。with_caption=True 会把
+                        # 画面上的标题和要点原文渲染出来。
+                        lines.extend(_render_shot(note, result, with_caption=True))
                         # 时间码用这张图的时间：点一下正好落在它讲的那一页上，
                         # 图和时间码说的是同一件事，不会出现「图 03:44、码 03:49」
                         lines.append(_item_line(note, text, frame.ts))
