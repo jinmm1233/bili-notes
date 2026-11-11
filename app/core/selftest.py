@@ -150,6 +150,16 @@ def run() -> int:
     except Exception as exc:                # noqa: BLE001
         check(False, f"vendor: mathml2omml 导入失败（{type(exc).__name__}）")
 
+    # ---- 繁简转换：打包环境里必须仍可用 ----
+    # zhconv 的字典是 json 数据文件，不收进包里的话冻结环境会「不报错但一个
+    # 字也没转」——最难发现的那种坏，所以在这里硬断言一次。
+    try:
+        from app.core import zh as _zh
+        check(_zh.to_simplified("邊緣系幫我們做了大部分工作") == "边缘系帮我们做了大部分工作",
+              "繁简转换在打包环境可用")
+    except Exception as exc:                # noqa: BLE001
+        check(False, f"繁简转换失败（{type(exc).__name__}）")
+
     lines.append(f"\n{'全部通过' if not failed else f'{failed} 项失败'}")
     _report(lines)
     return 0 if not failed else 1

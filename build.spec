@@ -69,6 +69,8 @@ for pkg in ("rapidocr_onnxruntime", "onnxruntime", "ctranslate2", "faster_whispe
         print(f"[warn] collect_all({pkg}) 失败: {exc}")
 
 datas += collect_data_files("certifi")
+# zhconv 的转换字典是 json 数据文件，不收进去的话冻结环境里转不了繁简
+datas += collect_data_files("zhconv")
 
 hiddenimports += [
     "docx",
@@ -81,7 +83,7 @@ hiddenimports += [
     # 繁简转换：纯 Python，但要在 try/except 里导入，PyInstaller 静态分析扫不到，
     # 不显式声明的话打包后繁简转换会静默失效（笔记里留着繁体）。
     "zhconv",
-    "zhconv.zhcdict",
+    "zhconv.zhconv",
     "app.services.export_docx",
     "app.services.export_pdf",
     "app.services.quiz_export",
