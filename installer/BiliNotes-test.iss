@@ -29,7 +29,7 @@
 ; ============================================================================
 
 #define MyAppName "BiliNotes"
-#define MyAppVersion "0.2.4"
+#define MyAppVersion "0.2.5"
 #define MyAppPublisher "BiliNotes"
 #define MyAppExeName "BiliNotes.exe"
 
