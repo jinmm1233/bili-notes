@@ -76,6 +76,16 @@ def main() -> int:
         print("安装包不存在")
         return 1
 
+    # 先记住「真实用户目录」的真实路径和内容快照 ——
+    # 后面要验证「这次运行没往真实目录写东西」。
+    # 机器上可能装着旧版（目录本来就有数据），所以只能靠快照对比，不能靠「目录空不空」。
+    real_appdata = Path(os.environ["APPDATA"]) / "BiliNotes"
+    real_snapshot: dict[str, float] = {}
+    if real_appdata.is_dir():
+        for path in real_appdata.rglob("*"):
+            if path.is_file():
+                real_snapshot[str(path)] = path.stat().st_mtime
+
     tmp_root = Path(tempfile.mkdtemp(prefix="bn_installer_"))
     install_dir = Path(args.install_dir) if args.install_dir else tmp_root / "BiliNotes"
     fake_appdata = tmp_root / "AppData" / "Roaming"
@@ -105,9 +115,13 @@ def main() -> int:
     env["LOCALAPPDATA"] = str(tmp_root / "AppData" / "Local")
     Path(env["LOCALAPPDATA"]).mkdir(parents=True, exist_ok=True)
 
+    # /CURRENTUSER：按用户安装，不需要管理员权限。
+    # 原因：安装包默认要管理员（装进 Program Files），在无人值守的 CI 里
+    # 会弹 UAC 然后一直等下去（弹窗在用户屏幕上，工具看不见也没人点）。
+    # 走这条「只装给自己」的路，正好也验证了非管理员机器能装。
     cmd = [
         str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-        f"/DIR={install_dir}", f"/LOG={log}",
+        "/CURRENTUSER", f"/DIR={install_dir}", f"/LOG={log}",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
     record(proc.returncode == 0, "安装程序退出码为 0", f"returncode={proc.returncode}")
@@ -131,12 +145,13 @@ def main() -> int:
     # 安装包自己的 PE 版本会带 Inno Setup 的 X 后缀（0.2.6X），那是安装器标记，
     # 不代表程序版本 —— 所以这里查的是注册表里的 DisplayVersion。
     display_version = ""
+    install_location = ""
     try:
         import winreg  # noqa: PLC0415
         for hive, rpath in (
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
             (winreg.HKEY_CURRENT_USER,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_LOCAL_MACHINE,
              r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
         ):
             with winreg.OpenKey(hive, rpath) as k:
@@ -151,11 +166,21 @@ def main() -> int:
                         try:
                             name = winreg.QueryValueEx(sk, "DisplayName")[0]
                             ver = winreg.QueryValueEx(sk, "DisplayVersion")[0]
+                            loc = winreg.QueryValueEx(sk, "InstallLocation")[0]
+                            uninst = winreg.QueryValueEx(sk, "UninstallString")[0]
                         except OSError:
                             continue
-                        if "BiliNotes" in str(name):
+                        # 只认装到本次测试目录的那条 —— 机器上可能还装着别的版本
+                        # （比如管理员装的旧版），不能被它干扰。
+                        # 匹配 UninstallString 而不是 InstallLocation：
+                        # 后者是 {autopf} 展开值，不一定等于 /DIR 指定的路径。
+                        hay = f"{loc} {uninst}".lower()
+                        if "bilinotes" in str(name).lower() and str(install_dir).lower() in hay:
                             display_version = str(ver)
+                            install_location = str(loc)
                             break
+                    if display_version:
+                        break
     except Exception as exc:  # noqa: BLE001
         record(False, "读取安装记录", str(exc)[:80])
     record(display_version == (m.group(1) if m else ""),
@@ -203,10 +228,24 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             record(False, "读取设置接口", str(exc)[:80])
 
-        # 全新用户目录：不该写脏真实目录
-        real_appdata = Path(os.environ["APPDATA"]) / "BiliNotes"
-        record(not real_appdata.exists() or not any(real_appdata.iterdir()),
-               "未写入真实用户目录", str(real_appdata))
+        # 全新用户目录：不该写脏真实目录。
+        # 判据是「跑完之后真实目录里有没有新增/改动过的文件」——
+        # 不能只看目录空不空：机器上本来就装着旧版，目录里本来就有数据。
+        # 跑之前拍快照，跑完对比。
+        changed = []
+        if real_appdata.is_dir():
+            for path in real_appdata.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = str(path.relative_to(real_appdata))
+                if rel.startswith("edge-profile"):
+                    continue
+                before = real_snapshot.get(str(path))
+                now = path.stat().st_mtime
+                if before is None or now > before + 0.001:
+                    changed.append(rel)
+        record(not changed, "未写入真实用户目录",
+               (f"新增/改动 {len(changed)} 个" + (f"：{changed[:3]}" if changed else "")))
         # 临时 APPDATA 下应建出数据目录
         record((fake_appdata / "BiliNotes").is_dir(), "在新的 APPDATA 下建出数据目录")
 

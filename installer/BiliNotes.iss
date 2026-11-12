@@ -41,10 +41,11 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 默认装到 Program Files（要管理员）。但也允许用户选「只装给自己」——
 ; 没有管理员权限的机器（公司电脑、部分精简系统）否则根本装不了。
-; PrivilegesRequiredOverridesAllowed=commandline 让安装程序在向导里问用户选哪种，
-; 命令行也能用 /CURRENTUSER 强制按用户安装。
+; dialog = 安装向导里问用户选哪种（自动包含 commandline，
+; 所以命令行也能用 /CURRENTUSER 强制按用户安装）。
+; 详见 PrivilegesRequiredOverridesAllowed。
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=commandline
+PrivilegesRequiredOverridesAllowed=dialog
 ; 卸载时不碰 %APPDATA%\BiliNotes（用户数据目录），默认就是不碰
 UninstallDisplayName={#MyAppName}
 
