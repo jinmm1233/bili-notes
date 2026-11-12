@@ -62,6 +62,10 @@ Source: "..\dist\BiliNotes\*"; DestDir: "{app}"; Flags: recursesubdirs ignorever
 ; 用户「双击安装目录里的 redist\vc_redist.x64.exe」，这里必须真有这个文件。
 Source: "redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "redist\vc_redist.x64.exe"; DestDir: "{app}\redist"; Flags: ignoreversion
+; 开源许可证与第三方声明：Apache-2.0 要求向二进制接收者附上许可证副本
+Source: "..\LICENSE"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
