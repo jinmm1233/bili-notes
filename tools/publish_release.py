@@ -2,7 +2,7 @@
 
 用法（项目根目录）：
     python tools/publish_release.py                          # 用 app/__init__.py 里的版本号
-    python tools/publish_release.py --version 0.2.5 --proxy http://127.0.0.1:7890
+    python tools/publish_release.py --version 0.2.6 --proxy http://127.0.0.1:7890
 
 做四件事：
   1. 复核安装包、SHA256SUMS.txt、Release 说明里的哈希三者一致；
