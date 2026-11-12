@@ -127,24 +127,51 @@ def main() -> int:
            "繁简转换字典已打包")
     record((install_dir / "redist" / "vc_redist.x64.exe").is_file(), "VC++ 运行库已随包")
 
-    # PE 版本信息
+    # 安装后的版本信息（用户真正会看的地方：控制面板「卸载程序」列表）
+    # 安装包自己的 PE 版本会带 Inno Setup 的 X 后缀（0.2.6X），那是安装器标记，
+    # 不代表程序版本 —— 所以这里查的是注册表里的 DisplayVersion。
+    display_version = ""
     try:
-        import win32api  # type: ignore
-        info = win32api.GetFileVersionInfo(str(exe), "\\")
-        ms = win32api.FileVersionInfoLookup(info, "\\VarFileInfo\\Translation")
-        key = f"\\VarFileInfo\\Translation\\{ms[0]:04x}{ms[1]:04x}\\FileVersion"
-        ver = win32api.FileVersionInfoLookup(info, key)
-        record(m is not None and ver.startswith(m.group(1)),
-               "PE 版本信息与文件名一致", ver)
-    except ImportError:
-        # 没装 pywin32 就跳过这���，不影响其余验收
-        record(True, "PE 版本信息检查（跳过：未装 pywin32）")
+        import winreg  # noqa: PLC0415
+        for hive, rpath in (
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_CURRENT_USER,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        ):
+            with winreg.OpenKey(hive, rpath) as k:
+                i = 0
+                while True:
+                    try:
+                        sub = winreg.EnumKey(k, i)
+                    except OSError:
+                        break
+                    i += 1
+                    with winreg.OpenKey(k, sub) as sk:
+                        try:
+                            name = winreg.QueryValueEx(sk, "DisplayName")[0]
+                            ver = winreg.QueryValueEx(sk, "DisplayVersion")[0]
+                        except OSError:
+                            continue
+                        if "BiliNotes" in str(name):
+                            display_version = str(ver)
+                            break
+    except Exception as exc:  # noqa: BLE001
+        record(False, "读取安装记录", str(exc)[:80])
+    record(display_version == (m.group(1) if m else ""),
+           "控制面板显示的版本号与文件名一致", display_version or "(没找到安装记录)")
 
-    # 桌面快捷方式（公共桌面，管理员安装写这里）
-    shortcut = Path(r"C:\Users\Public\Desktop\BiliNotes.lnk")
-    record(shortcut.is_file(), "公共桌面快捷方式已创建", str(shortcut))
-    start_menu = Path(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\BiliNotes")
-    record(start_menu.is_dir(), "开始菜单快捷方式已创建", str(start_menu))
+    # 桌面快捷方式：管理员安装写公共桌面，按用户安装写用户桌面，两处都查
+    pub_shortcut = Path(r"C:\Users\Public\Desktop\BiliNotes.lnk")
+    usr_shortcut = fake_userprofile / "Desktop" / "BiliNotes.lnk"
+    record(pub_shortcut.is_file() or usr_shortcut.is_file(),
+           "桌面快捷方式已创建",
+           str(pub_shortcut if pub_shortcut.is_file() else usr_shortcut))
+    pub_menu = Path(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\BiliNotes")
+    usr_menu = fake_appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "BiliNotes"
+    record(pub_menu.is_dir() or usr_menu.is_dir(),
+           "开始菜单快捷方式已创建",
+           str(pub_menu if pub_menu.is_dir() else usr_menu))
 
     # 泄露检查：包里不能有打包机的用户名
     data = setup.read_bytes()

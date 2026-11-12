@@ -22,6 +22,13 @@ AppId={{109BC6A1-2D75-47E6-8CB7-D32F0F5063D3}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; PE 版本信息。Windows 文件属性里显示的会带一个 X 后缀（如 0.2.6X）——
+; 那是 Inno Setup 的 Setup Loader 给安装器加的标记，全生态都这样，
+; 去掉它得关掉 UseSetupLdr（包体积翻倍、安装器行为改变，不划算）。
+; 用户真正会看的地方 —— 安装后的程序属性、控制面板「卸载程序」列表 ——
+; 显示的都是干净的 0.2.6。
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoDescription={#MyAppName} 安装程序
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -32,7 +39,12 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+; 默认装到 Program Files（要管理员）。但也允许用户选「只装给自己」——
+; 没有管理员权限的机器（公司电脑、部分精简系统）否则根本装不了。
+; PrivilegesRequiredOverridesAllowed=commandline 让安装程序在向导里问用户选哪种，
+; 命令行也能用 /CURRENTUSER 强制按用户安装。
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=commandline
 ; 卸载时不碰 %APPDATA%\BiliNotes（用户数据目录），默认就是不碰
 UninstallDisplayName={#MyAppName}
 
