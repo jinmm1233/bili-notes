@@ -35,30 +35,32 @@ BiliNotes 本体以 **Apache License 2.0** 授权（见 [LICENSE](LICENSE)）。
 mathml2omml / typing_extensions），其许可证原文保存在各自的
 `*.dist-info/licenses/` 下，未做改动。
 
-## 随安装包分发的二进制
+## FFmpeg / FFprobe
 
-### FFmpeg / FFprobe
+**当前发布的安装包（0.2.6）不包含 ffmpeg / ffprobe**：程序首次需要转码时，
+由用户机器自行从 gyan.dev 下载 essentials 构建到 `%APPDATA%\BiliNotes\bin\`，
+不构成本项目的分发行为。
 
-安装包内含 `ffmpeg.exe` 与 `ffprobe.exe`，来自 gyan.dev 的
-**essentials 构建（FFmpeg 7.1）**，其编译参数包含 `--enable-gpl`
-与 `--enable-version3`，因此这两个二进制以
-**GNU General Public License v3.0** 分发。
+需要注意 `build.spec` 的行为：**打包时如果项目根目录存在 `bin/`，其中的
+ffmpeg.exe / ffprobe.exe 会被打进安装包**（该目录在 `.gitignore` 里，属于
+构建机本地副本）。一旦随包分发，请遵守以下条款：
 
-- GPLv3 全文：https://www.gnu.org/licenses/gpl-3.0.txt
-- 该构建的来源与构建脚本：https://www.gyan.dev/ffmpeg/builds/
-- FFmpeg 上游源码：https://ffmpeg.org/download.html
+- gyan.dev 的 essentials 构建启用了 `--enable-gpl --enable-version3`，
+  因此该二进制以 **GNU General Public License v3.0** 分发。
+- 需随包提供 GPLv3 全文与源码获取方式：
+  - GPLv3 全文：https://www.gnu.org/licenses/gpl-3.0.txt
+  - 该构建的来源与构建脚本：https://www.gyan.dev/ffmpeg/builds/
+  - FFmpeg 上游源码：https://ffmpeg.org/download.html
+- BiliNotes 通过独立进程调用 ffmpeg / ffprobe（`subprocess`），不链接其代码、
+  不修改其源码，属于聚合分发，本项目自身仍按 Apache-2.0 授权。
 
-BiliNotes 通过**独立进程**调用 ffmpeg / ffprobe（`subprocess`），不链接其代码、
-不修改其源码，属于聚合分发。因此本项目自身仍按 Apache-2.0 授权，
-ffmpeg / ffprobe 二进制保持其原有 GPLv3 授权。
-
-> 若要替换为 LGPL 构建（不启用 libx264 / libx265），需自行编译并沿用其
-> LGPLv2.1+ 条款；当前使用的是 GPL 构建，请勿删除本节说明。
+若要避免这层义务，发布构建前删掉 `bin/`，或自行编译不启用 libx264 / libx265
+的 LGPL 构建（LGPLv2.1+）。
 
 ### vendor/bin
 
 `l2m.exe`、`latex2mathml.exe` 是用 PyInstaller 打包的 latex2mathml（MIT），
-仅用于公式转换，无额外授权要求。
+随包分发，仅用于公式转换，无额外授权要求。
 
 ## 运行期下载（不随本项目分发）
 
