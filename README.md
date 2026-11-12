@@ -188,3 +188,16 @@ CPU 上 small 约为视频时长的 1/9。设置里可切 `tiny`（快 3 倍）�
 - OCR 对花体字、竖排文字识别率有限，笔记中已标注「可能有误」
 - 弹幕不参与总结
 - 收藏夹一次最多导入 200 个，超出请分批
+
+## 许可证
+
+[Apache License 2.0](LICENSE)。
+
+可以商用、修改、闭源分发、收费，不需要联系作者，只需保留 [LICENSE](LICENSE) 与
+[NOTICE](NOTICE)、标注你改过哪些文件、不使用本项目名称与图标做背书。
+条款里包含明确的贡献者专利授权，企业可以放心引入。
+
+随安装包分发的 ffmpeg / ffprobe 是 GPLv3 构建，全部第三方组件与授权见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+欢迎 Issue 和 PR。提交 PR 即表示同意以 Apache-2.0 授权你的贡献。
