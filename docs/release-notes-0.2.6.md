@@ -117,3 +117,12 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库，无需�
 certutil -hashfile BiliNotes-setup-0.2.6.exe SHA256
 ```
 
+### 许可证
+
+Apache License 2.0。可以商用、修改、闭源分发、收费，保留版权与许可声明即可；
+条款含贡献者专利授权，企业可以放心引入。
+
+- 源码与许可证全文：https://github.com/jinmm1233/bili-notes
+- 本页资产区另附 `LICENSE`、`NOTICE`、`THIRD-PARTY-NOTICES.md` 三个文件
+- 第三方组件及各授权（含运行期下载的 ffmpeg）见 `THIRD-PARTY-NOTICES.md`
+
