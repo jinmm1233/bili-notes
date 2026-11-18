@@ -62,6 +62,26 @@ jobs:
         run: |
           python -m pip freeze | grep -iE 'pyinstaller|onnxruntime|ctranslate2|faster|rapidocr|pywebview|fastapi' || true
 
+      # 仓库里的 vendor/ 是从 Windows 机器装好提交的，lxml 里全是
+      # etree.cp313-win_amd64.pyd 这类 Windows 编译产物，macOS 上 import 必失败
+      # （自检会报 vendor: lxml / python-docx 导入失败 → Word 导出废掉）。
+      # 这里按当前平台重新装一份，产物只用于本次构建，不回写仓库。
+      - name: Refresh vendor for macOS
+        run: |
+          rm -rf vendor
+          python -m pip install --target vendor --upgrade --no-compile \
+            python-docx latex2mathml mathml2omml typing_extensions lxml
+          echo "=== vendor 顶层 ==="
+          ls vendor | head
+          echo "=== 编译扩展（应为 .so 而非 .pyd）==="
+          find vendor -name "*.so" | head -8
+          if find vendor -name "*.pyd" | grep -q .; then
+            echo "::error::vendor 里仍有 Windows 的 .pyd，平台装错了"
+            exit 1
+          fi
+          echo "=== 冒烟导入 ==="
+          PYTHONPATH=vendor python -c "import lxml.etree as e; print('lxml', e.LXML_VERSION); import docx; print('docx ok')"
+
       # 确保没有 Windows 的 bin/ 混进来：CI 是干净的 checkout，本就不该有，
       # 这里显式断言一次，避免误把 GPL 的 Windows exe 打进 Mac 包。
       - name: Assert no bundled ffmpeg
