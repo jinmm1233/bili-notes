@@ -80,11 +80,30 @@ jobs:
           test -f dist/BiliNotes.app/Contents/MacOS/BiliNotes
           test -f dist/BiliNotes.app/Contents/Info.plist
           echo "app bundle OK"
-          # 冻结环境自检：证明 .app 里的 Python 逻辑能跑（含音画锚定等）
+          # 冻结环境自检：证明 .app 里的 Python 逻辑能跑（含音画锚定等）。
+          # 窗口程序的 stdout 是 devnull，自检详情必须经 BILINOTES_PROBE_OUT 落文件再 cat。
+          # 用 console 版跑自检（窗口版 stdout 是 devnull，报错看不到）
+          PROBE_EXE="dist/BiliNotes.app/Contents/MacOS/BiliNotes-console"
+          [ -x "$PROBE_EXE" ] || PROBE_EXE="dist/BiliNotes.app/Contents/MacOS/BiliNotes"
+          echo "probe exe: $PROBE_EXE"
+          set +e
           BILINOTES_PROBE=bn_selftest BILINOTES_CRASHLOG=0 \
-            dist/BiliNotes.app/Contents/MacOS/BiliNotes || {
-              echo "::error::frozen selftest failed"; exit 1;
-            }
+            BILINOTES_PROBE_OUT="$RUNNER_TEMP/selftest.txt" \
+            "$PROBE_EXE"
+          ST=$?
+          set -e
+          echo "selftest exit=$ST"
+          if [ -f "$RUNNER_TEMP/selftest.txt" ]; then
+            echo "===== selftest report ====="
+            cat "$RUNNER_TEMP/selftest.txt"
+            echo "===== end report ====="
+          else
+            echo "::warning::自检未写出报告文件（可能在导入阶段就崩了）"
+          fi
+          if [ "$ST" -ne 0 ]; then
+            echo "::error::frozen selftest failed (exit $ST) — 详见上方报告，勿发布此包"
+            exit 1
+          fi
 
       - name: Make dmg
         run: |
