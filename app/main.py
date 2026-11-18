@@ -207,8 +207,12 @@ def run() -> None:
             break
         if time.time() > deadline:
             # 锁被占着、端口却不通：对方卡死了。宁可明确报错，也别开一个连不上的窗口。
+            _proc_hint = (
+                "任务管理器结束所有 BiliNotes.exe"
+                if os.name == "nt" else "活动监视器里退出所有 BiliNotes 进程"
+            )
             print("\n  BiliNotes 似乎还在退出中，请稍等几秒再打开一次。")
-            print("  若反复出现，打开任务管理器结束所有 BiliNotes.exe 后重试。\n")
+            print(f"  若反复出现，打开{_proc_hint}后重试。\n")
             return
         time.sleep(0.25)
 
@@ -242,8 +246,12 @@ def run() -> None:
         # 绑不上就绝不能开窗口：那会留下一个永远连不上、点不动的白窗口。
         server, local_url, port = _serve(app, bind, settings.port, settings.host)
         if server is None:
+            _proc_hint = (
+                "任务管理器里结束其他 BiliNotes.exe"
+                if os.name == "nt" else "活动监视器里退出其他 BiliNotes 进程"
+            )
             print("\n  BiliNotes 启动失败：可用端口都被占用了。")
-            print("  请先在任务管理器里结束其他 BiliNotes.exe，再重新打开。\n")
+            print(f"  请先{_proc_hint}，再重新打开。\n")
             return
     else:
         port = pick_port(bind, settings.port)

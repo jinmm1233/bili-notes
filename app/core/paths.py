@@ -26,9 +26,17 @@ def bundle_root() -> Path:
 
 
 def user_data_dir() -> Path:
-    """%APPDATA%\\BiliNotes，存配置、密钥、模型、缓存。"""
-    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
-    path = Path(base) / APP_NAME
+    """各平台的用户数据目录，存配置、密钥、模型、缓存。
+
+    Windows: %APPDATA%\\BiliNotes
+    macOS:   ~/Library/Application Support/BiliNotes（Apple 约定，且不会 iCloud 同步）
+    Linux:   ~/.config/BiliNotes
+    """
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("APPDATA") or str(Path.home() / ".config"))
+    path = base / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 

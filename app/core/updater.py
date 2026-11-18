@@ -151,17 +151,42 @@ def normalize_tag(tag: str) -> str:
     return (tag or "").strip().lstrip("vV")
 
 
+def _mac_arch_token() -> str:
+    """当前 Mac 架构在资产文件名里的标记，用于优先匹配对应安装包。"""
+    if sys.platform != "darwin":
+        return ""
+    try:
+        import platform as _pf
+        return "arm64" if _pf.machine().lower() in ("arm64", "aarch64") else "x64"
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------- Release 解析
 def parse_release(payload: dict, repo: str) -> dict:
     """把 GitHub 的 release JSON 收成前端要的那一小撮字段。"""
     tag = normalize_tag(str(payload.get("tag_name") or ""))
     assets = [a for a in (payload.get("assets") or []) if isinstance(a, dict)]
-    exes = [a for a in assets
-            if str(a.get("name") or "").lower().endswith(".exe")]
 
-    def _exe_rank(a: dict) -> tuple[int, str]:
+
+    def _asset_rank(a: dict) -> tuple[int, str]:
+        """按平台挑主安装包；数字越小越优先。
+        Windows 认 .exe（排除 vc_redist）；macOS 认 .dmg > .zip，且优先匹配架构。"""
         name = str(a.get("name") or "").lower()
-        # Release 里可能同时挂着 vc_redist 这类运行库，别把它当主安装包
+        if sys.platform == "darwin":
+            if not name.endswith((".dmg", ".zip")):
+                return (9, name)
+            if "sha256" in name or "sums" in name or "checksum" in name:
+                return (9, name)
+            # 当前架构优先；universal 次之；都不匹配也能用（兜底）
+            if _mac_arch_token() in name:
+                return (0, name)
+            if "universal" in name:
+                return (1, name)
+            return (2, name)
+        # Windows / 其他：原来的 .exe 逻辑，一字不改
+        if not name.endswith(".exe"):
+            return (9, name)
         if "bili" in name and "setup" in name:
             return 0, name
         if "setup" in name:
@@ -170,7 +195,8 @@ def parse_release(payload: dict, repo: str) -> dict:
             return 2, name
         return 3, name
 
-    exe = min(exes, key=_exe_rank) if exes else None
+    candidates = [a for a in assets if _asset_rank(a)[0] < 9]
+    exe = min(candidates, key=_asset_rank) if candidates else None
     sum_asset = next((a for a in assets
                       if re.search(r"(sha256|\.sums?$|checksums)",
                                   str(a.get("name") or ""), re.I)), None)
@@ -303,7 +329,7 @@ def _cleanup_old(keep: Path, keep_part: Path) -> None:
     for p in folder.glob("*"):
         if p in (keep, keep_part):
             continue
-        if p.is_file() and p.suffix.lower() in (".exe", ".part", ".tmp"):
+        if p.is_file() and p.suffix.lower() in (".exe", ".dmg", ".zip", ".part", ".tmp"):
             try:
                 p.unlink()
             except OSError:
@@ -444,6 +470,21 @@ def install() -> dict:
         state = _DOWNLOAD.get("state")
     if state != "done" or not path.is_file():
         return {"ok": False, "message": "安装包还没下好，先点「下载更新」"}
+
+    # macOS：dmg 不能像 exe 那样静默安装，交给系统「打开」（挂载后用户拖进
+    # 应用程序）。不自动退出程序——用户可能还在看旧版本，装完重开即可。
+    if sys.platform == "darwin":
+        try:
+            subprocess.Popen(["open", str(path)], close_fds=True)
+        except OSError as exc:
+            return {"ok": False, "message": f"打开安装包失败：{exc}"}
+        return {
+            "ok": True,
+            "message": "已打开安装包，把 BiliNotes 拖进「应用程序」即可；"
+                       "笔记和配置都保留，装完重新打开生效",
+        }
+
+    # Windows：拉起安装器后退出本程序，否则撞文件占用。
     try:
         subprocess.Popen([str(path)], cwd=str(path.parent), close_fds=True)
     except OSError as exc:

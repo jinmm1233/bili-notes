@@ -29,9 +29,10 @@ if os.environ.get("BILINOTES_CRASHLOG", "1") != "0":
     import faulthandler
 
     try:
-        _crash_dir = os.path.join(
-            os.environ.get("APPDATA") or os.path.expanduser("~"), "BiliNotes", "logs"
-        )
+        # 复用 core.paths 的平台约定：Windows %APPDATA%、macOS ~/Library/Application
+        # Support、Linux ~/.config。crash.log 必须和用户数据目录在一起。
+        from app.core.paths import user_data_dir as _udd
+        _crash_dir = str(_udd() / "logs")
         os.makedirs(_crash_dir, exist_ok=True)
         _crash = open(  # noqa: SIM115  —— 进程级句柄，要活到退出
             os.path.join(_crash_dir, "crash.log"), "a", encoding="utf-8", buffering=1

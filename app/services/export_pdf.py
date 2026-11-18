@@ -23,14 +23,21 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# 常见安装位置，按优先级排。Edge 必带，Chrome 作为补充。
-_CANDIDATES = (
+# 常见安装位置，按优先级排。Windows 靠系统自带 Edge，macOS 找 Chrome/Edge。
+_WIN_CANDIDATES = (
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
 )
+_MAC_CANDIDATES = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+)
+_CANDIDATES = _WIN_CANDIDATES + _MAC_CANDIDATES
 
 # 等页面把笔记、公式、图片都画完。笔记长、图多时虚时间要多给一点。
 _VTIME_MS = 15000
@@ -40,7 +47,7 @@ def find_browser() -> str | None:
     for path in _CANDIDATES:
         if path and Path(path).is_file():
             return path
-    for name in ("msedge", "chrome", "chromium"):
+    for name in ("msedge", "chrome", "chromium", "google-chrome", "google-chrome-stable"):
         found = shutil.which(name)
         if found:
             return found

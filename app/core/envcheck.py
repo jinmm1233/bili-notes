@@ -91,6 +91,12 @@ def _check_one(module: str, label: str) -> dict[str, Any]:
             "双击安装目录里的 redist/vc_redist.x64.exe 安装后重开程序即可；"
             "安装包用户一般已自动装好，遇到这个提示说明装机时跳过了。"
         )
+    elif sys.platform == "darwin" and ("mach-o" in msg.lower() or "architecture" in msg.lower()):
+        hint = (
+            f"{label}加载失败：架构不匹配（装错 Intel/Apple Silicon 版本），"
+            "或 macOS 拦截了未签名二进制。请确认下载的是对应芯片的安装包；"
+            "若从「访达」打开被拦，可右键图标选「打开」。"
+        )
     elif crashed:
         code = f"0x{proc.returncode & 0xFFFFFFFF:08X}" if proc.returncode < 0 else hex(proc.returncode)
         hint = (

@@ -17,27 +17,35 @@ EXIT=0，而窗口还开着）。以前用 `proc.wait()` 判断，结果程序 1
 """
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import subprocess
 import sys
 import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 from .core.paths import user_data_dir
 
 log = logging.getLogger(__name__)
 
+# 平台判定：Windows 的 ctypes/wintypes 在 macOS 上 import 即失败，
+# 所以 Windows 专属的 API 全部收进 IS_WINDOWS 分支内延迟初始化。
+IS_WINDOWS = sys.platform == "win32"
+
 # 当前 Edge 应用窗口的进程。更新安装前要先关掉它，安装器才能覆盖 exe。
 _active: subprocess.Popen | None = None
 _active_lock = threading.Lock()
 
-_user32 = ctypes.WinDLL("user32", use_last_error=True)
-_WM_CLOSE = 0x0010
-_SW_RESTORE = 9
+# 下面这些只在 Windows 下有定义；非 Windows 上 focus/_app_window/close 直接返回。
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _WM_CLOSE = 0x0010
+    _SW_RESTORE = 9
+    _ENUM_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 def focus_existing() -> bool:
@@ -47,6 +55,8 @@ def focus_existing() -> bool:
     以前走 open_blocking，每双击一次就多一个 136MB 的 Python 进程挂在后台，
     双击五次就能吃掉半 G 内存，而用户看到的只是同一个界面。
     """
+    if not IS_WINDOWS:
+        return False
     hwnd = _app_window()
     if not hwnd:
         return False
@@ -59,16 +69,18 @@ def focus_existing() -> bool:
     except Exception as exc:                   # 切换前台被系统拦下也不算失败
         log.debug("窗口切前台失败：%s", exc)
         return False
-_ENUM_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 def _app_window() -> int:
     """找 Edge 的 `--app` 窗口，返回 hwnd；没有则 0。
+    （非 Windows 恒为 0 —— 没有 Win32 窗口枚举概念。）
 
     只认类名 `Chrome_WidgetWin_1`（Chromium 的顶层窗口类），避免把资源管理器里
     名字带 BiliNotes 的文件夹窗口误当成应用窗口。标题可能是页面标题
     （`BiliNotes · B站视频知识库`），也可能是加载失败时的 URL（`127.0.0.1`）。
     """
+    if not IS_WINDOWS:
+        return 0
     found = 0
 
     def _visit(hwnd, _lparam):
@@ -116,6 +128,14 @@ def available() -> bool:
     """能不能开独立窗口（Edge --app 或 pywebview，总有一个就算有）。"""
     if os.environ.get("BILINOTES_WINDOW") == "0":
         return False
+    # macOS 上 pywebview 用系统 WebKit（WKWebView），不像 Windows 那样有
+    # pythonnet/CLR 段错误问题——冻结环境也能安全开窗口。
+    if not IS_WINDOWS:
+        try:
+            import webview  # noqa: F401, PLC0415
+            return True
+        except Exception:
+            return False
     if _find_edge():
         return True
     try:
@@ -127,10 +147,11 @@ def available() -> bool:
 
 def open_blocking(url: str, title: str = "BiliNotes") -> None:
     """开一个独立应用窗口并阻塞到窗口关闭。全都起不来时抛异常由调用方兜底。"""
-    edge = _find_edge()
-    if edge:
-        _open_edge_app(edge, url)
-        return
+    if IS_WINDOWS:
+        edge = _find_edge()
+        if edge:
+            _open_edge_app(edge, url)
+            return
     _open_pywebview(url, title)
 
 
@@ -186,10 +207,13 @@ def _open_edge_app(edge: str, url: str) -> None:
 
 def close() -> bool:
     """关掉当前应用窗口。返回是否真的关了；没窗口时返回 False。
+    （macOS/pywebview 的窗口由 updater 直接退出进程，无需 Win32 消息。）
 
     由 updater.install() 调用：发 WM_CLOSE 后，上面的轮询发现窗口消失就返回，
     run() 随即退出进程，安装器才能覆盖 exe。
     """
+    if not IS_WINDOWS:
+        return False
     hwnd = _app_window()
     if hwnd:
         try:
@@ -210,9 +234,9 @@ def close() -> bool:
 
 
 def _open_pywebview(url: str, title: str) -> None:
-    """pywebview 兜底：只在源码运行时用（冻结环境会段错误，见模块注释）。"""
-    if getattr(sys, "frozen", False):
-        raise RuntimeError("打包环境不开 pywebview（已知段错误），走浏览器兜底")
+    """pywebview 窗口：Windows 冻结环境会段错误（见模块注释），macOS 可安全用。"""
+    if IS_WINDOWS and getattr(sys, "frozen", False):
+        raise RuntimeError("Windows 打包环境不开 pywebview（已知 CLR 段错误），走浏览器兜底")
     import webview  # noqa: PLC0415
 
     window = webview.create_window(

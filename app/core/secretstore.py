@@ -7,12 +7,10 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 import json
 import logging
 import os
 import sys
-from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +19,14 @@ log = logging.getLogger(__name__)
 IS_WINDOWS = sys.platform == "win32"
 _CRYPTPROTECT_UI_FORBIDDEN = 0x01
 
+# wintypes / ctypes.windll 只在 Windows 存在；macOS 上 import 会直接失败。
+# 非 Windows 走明文 + 0600 权限（见 _protect/_unprotect），不定义这些结构。
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
 
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    class _DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
 
 def _protect(data: bytes) -> bytes:

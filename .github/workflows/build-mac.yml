@@ -1,0 +1,114 @@
+name: Build macOS
+
+# 手动触发，或推 v* 标签时触发。产物上传为 workflow artifact（保留 30 天），
+# 不自动发 Release —— 签名/公证没配好之前，先让人下载验证再决定发布。
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: '同时上传到对应 tag 的 Release（需已存在 tag）'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # 仅 release=true 时需要上传资产
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15          # Apple Silicon (M1)
+          - arch: x64
+            runner: macos-15-intel    # Intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verify runner architecture
+        run: |
+          echo "uname -m: $(uname -m)"
+          echo "expected: ${{ matrix.arch }}"
+          ACTUAL=$(uname -m)
+          if [ "${{ matrix.arch }}" = "arm64" ] && [ "$ACTUAL" != "arm64" ]; then
+            echo "::error::expected arm64 runner, got $ACTUAL"; exit 1
+          fi
+          if [ "${{ matrix.arch }}" = "x64" ] && [ "$ACTUAL" != "x86_64" ]; then
+            echo "::error::expected x64 runner, got $ACTUAL"; exit 1
+          fi
+
+      # build.spec 的 hiddenimports 依赖 PyInstaller；rapidocr/ctranslate2/onnx
+      # 在 macOS arm64 上都有官方 wheel，pip 会按架构自动选。
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Record dependency versions
+        run: |
+          python -m pip freeze | grep -iE 'pyinstaller|onnxruntime|ctranslate2|faster|rapidocr|pywebview|fastapi' || true
+
+      # 确保没有 Windows 的 bin/ 混进来：CI 是干净的 checkout，本就不该有，
+      # 这里显式断言一次，避免误把 GPL 的 Windows exe 打进 Mac 包。
+      - name: Assert no bundled ffmpeg
+        run: |
+          if [ -d bin ]; then
+            echo "::warning::bin/ exists in checkout; removing before Mac build"
+            rm -rf bin
+          fi
+
+      - name: Build .app with PyInstaller
+        run: python -m PyInstaller build-mac.spec --noconfirm
+
+      - name: Verify .app bundle
+        run: |
+          test -d dist/BiliNotes.app
+          test -f dist/BiliNotes.app/Contents/MacOS/BiliNotes
+          test -f dist/BiliNotes.app/Contents/Info.plist
+          echo "app bundle OK"
+          # 冻结环境自检：证明 .app 里的 Python 逻辑能跑（含音画锚定等）
+          BILINOTES_PROBE=bn_selftest BILINOTES_CRASHLOG=0 \
+            dist/BiliNotes.app/Contents/MacOS/BiliNotes || {
+              echo "::error::frozen selftest failed"; exit 1;
+            }
+
+      - name: Make dmg
+        run: |
+          VERSION=$(python -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('app/__init__.py').read()).group(1))")
+          DMG="BiliNotes-${VERSION}-macos-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "BiliNotes" -srcfolder dist/BiliNotes.app \
+            -ov -format UDZO "$DMG"
+          echo "DMG=$DMG" >> $GITHUB_ENV
+          shasum -a 256 "$DMG" | tee "$DMG.sha256"
+          ls -lh "$DMG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BiliNotes-macos-${{ matrix.arch }}
+          path: |
+            ${{ env.DMG }}
+            ${{ env.DMG }}.sha256
+          retention-days: 30
+
+      - name: Upload to Release (optional)
+        if: ${{ inputs.release && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DMG: ${{ env.DMG }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "$DMG" "$DMG.sha256" --clobber
