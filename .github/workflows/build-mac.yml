@@ -5,6 +5,14 @@ name: Build macOS
 on:
   workflow_dispatch:
     inputs:
+      arch:
+        description: '只构建某个架构（arm64 排队紧张时单独重试）'
+        type: choice
+        options:
+          - all
+          - arm64
+          - x64
+        default: all
       release:
         description: '同时上传到对应 tag 的 Release（需已存在 tag）'
         type: boolean
@@ -22,12 +30,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # 用 fromJSON 按输入生成矩阵：job 级 if 不能引用 matrix（GitHub 限制），
+      # 只能在这里过滤。arm64 用明确的 macos-26；排队超时可单独重试。
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest      # Apple Silicon；macos-15 曾排队 15 分钟被取消，改用最主流的 latest
-          - arch: x64
-            runner: macos-15-intel    # Intel
+        include: ${{ fromJSON(inputs.arch == 'arm64' && '[{"arch":"arm64","runner":"macos-26"}]' || inputs.arch == 'x64' && '[{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-26"},{"arch":"x64","runner":"macos-15-intel"}]') }}
 
     steps:
       - name: Checkout
