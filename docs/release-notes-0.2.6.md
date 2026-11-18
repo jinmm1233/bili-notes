@@ -1,11 +1,17 @@
 ## BiliNotes v0.2.6
 
 把 B 站视频变成能读、能复习、能打印的 Markdown 笔记。
-Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库，无需装 Python。
+本版同时提供 Windows 与 macOS 安装包，两者都不需要另装 Python。
 
-- 安装包：`BiliNotes-setup-0.2.6.exe`
-- 大小：210.9 MB（221121505 字节）
-- SHA256：`4700c67194bf2c586b486d07f5343be578d6e4d6334d487d17042a4848ce11bd`
+| 平台 | 文件 | 大小 | 架构 |
+|---|---|---|---|
+| Windows 10/11 | `BiliNotes-setup-0.2.6.exe` | 210.9 MB（221,121,505 字节） | x64 |
+| macOS 10.15+ | `BiliNotes-0.2.6-macos-x64.dmg` | 240.0 MB（251,727,681 字节） | Intel x64，Apple 芯片经 Rosetta 2 运行 |
+
+SHA256：
+
+- Windows：`4700c67194bf2c586b486d07f5343be578d6e4d6334d487d17042a4848ce11bd`
+- macOS：`759b2f5f628613205900673a0eec8545d9b5def405123f11be516c8bdeb1f0b7`
 
 ### 这个版本能做什么
 
@@ -69,25 +75,30 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库，无需�
 
 ### 需要准备什么
 
-- **Windows 10/11**（64 位）
+- **Windows 10/11**（64 位），或 **macOS 10.15 Catalina 及以上**
+  - macOS 包是 Intel（x64）构建：Intel Mac 原生运行；M1/M2/M3/M4 会由系统自动经
+    Rosetta 2 转译运行，功能一致，速度略低于原生
 - **一个模型 API Key**（DeepSeek / 智谱 / 通义千问等任选其一，填在设置页）
   - 没有 Key 也能用：输出转写全文 + 关键画面 + 画面文字，只是没有 AI 摘要与画面判断
 - **首次运行会自动下载语音模型**（默认 base，145MB，约 1–2 分钟，走 hf-mirror 镜像并断点续传）；
   网络差可在设置里换 tiny（75MB）
-- 首次转写还需下载 ffmpeg（约 92MB），设置页可一键下载
+- 首次转写还需下载 ffmpeg（Windows 约 92MB、macOS 约 28MB），设置页可一键下载
 
 ### 安装与迁移
 
-安装包是**绿色可迁移**的：程序、ffmpeg、VC++ 运行库都打包在安装包内，
+安装包是**绿色可迁移**的：程序本体打在安装包里，ffmpeg 与语音模型在首次使用时自动下载，
 不依赖本机 Python。换一台机器直接装即可，**但本机的密钥、登录态、模型不会跟着走**：
 
-| 内容 | 位置 | 换机后 |
-|---|---|---|
-| 笔记产物 | `文档\BiliNotes\` | 手动复制即可 |
-| 偏好设置 | `%APPDATA%\BiliNotes\config.json` | 可复制（不含密钥） |
-| API Key | `%APPDATA%\BiliNotes\secrets.dat` | **不迁移**——Windows DPAPI 加密，换机解不开，需重新填 |
-| B 站登录态 | `%APPDATA%\BiliNotes\cookies.txt` | **不迁移**，需重新扫码 |
-| 语音模型 / ffmpeg | `%APPDATA%\BiliNotes\models\`、`bin\` | 不迁移，首次运行自动重新下载 |
+| 内容 | Windows | macOS | 换机后 |
+|---|---|---|---|
+| 笔记产物 | `文档\BiliNotes\` | `~/Documents/BiliNotes/` | 手动复制即可 |
+| 偏好设置 | `%APPDATA%\BiliNotes\config.json` | `~/Library/Application Support/BiliNotes/config.json` | 可复制（不含密钥） |
+| API Key | `%APPDATA%\BiliNotes\secrets.dat` | 同目录 `secrets.dat`（0600 权限） | **不迁移**，需重新填 |
+| B 站登录态 | `%APPDATA%\BiliNotes\cookies.txt` | 同目录 `cookies.txt` | **不迁移**，需重新扫码 |
+| 语音模型 / ffmpeg | `%APPDATA%\BiliNotes\models\`、`bin\` | 同目录下 `models/`、`bin/` | 不迁移，首次运行自动重新下载 |
+
+> Windows 的密钥用系统 DPAPI 加密，换机后解不开；macOS 上以当前用户独占（0600）的文件存放。
+> 两个平台的笔记格式完全相同，可以在 Windows 与 Mac 之间互相复制。
 
 ### 已知限制
 
@@ -97,24 +108,52 @@ Windows 一键安装包，内含主程序、ffmpeg 与 VC++ 运行库，无需�
 - OCR 对花体字、竖排文字识别率有限，笔记中已标注「可能有误」
 - 弹幕不参与总结
 - 收藏夹一次最多导入 200 个，超出请分批
+- **macOS 版未做 Apple 签名与公证**，首次打开需要右键 → 打开（见上文安装步骤）
+- **macOS 版当前只有 Intel（x64）构建**，Apple 芯片机器经 Rosetta 2 转译运行；
+  原生 arm64 版本随后补上，届时会单独提供下载
+- macOS 的界面走系统 WKWebView（Windows 是 Edge WebView2），极少数样式细节可能略有差异
+- 应用内更新在 macOS 上会打开 dmg 所在位置、由你手动拖进「应用程序」；
+  Windows 是直接启动安装程序
 
 ### 安装
 
-1. 下载上面的 `BiliNotes-setup-0.2.6.exe`；
-2. 双击运行，Windows 权限确认点「是」；
+**Windows**
+
+1. 下载 `BiliNotes-setup-0.2.6.exe`；
+2. 双击运行，权限确认点「是」；
 3. 装完从桌面快捷方式打开。首次运行会下载语音模型与 ffmpeg，
    然后在「设置」里填一个模型 API Key、扫码登录 B 站，就能开始用了。
 
 > 没有管理员权限的机器也能装：安装向导会问你「装给所有用户」还是「只装给自己」，
 > 选后者就装到当前用户的目录，全程不需要提权。
 
+**macOS**
+
+1. 下载 `BiliNotes-0.2.6-macos-x64.dmg`；
+2. 双击挂载，把 `BiliNotes` 拖进「应用程序」文件夹；
+3. **首次打开时右键点图标 → 选「打开」**。安装包未做 Apple 开发者签名，直接双击会被
+   Gatekeeper 拦下；右键打开只需做这一次。若仍被拦住，去
+   「系统设置 → 隐私与安全性」点「仍要打开」；
+4. 首次运行会下载语音模型与 ffmpeg，然后在「设置」里填 API Key、扫码登录 B 站。
+
+> 未签名是当前版本的已知情况：要彻底消除这个提示，需要 Apple 开发者账号
+> 签名并公证（$99/年）。程序本身完整可用，只是首次启动多一步确认。
+
 ### 校验
 
-`SHA256SUMS.txt` 会作为资产一起上传，程序下载完会自动比对；
-上面的 SHA256 也写了同一份值，两种来源任取其一都能通过。
+`SHA256SUMS.txt` 会作为资产一起上传，里面同时列出 Windows 与 macOS 两个包的哈希；
+上面写的 SHA256 是同一份值，两种来源任取其一都能对上。
+
+Windows：
 
 ```bash
 certutil -hashfile BiliNotes-setup-0.2.6.exe SHA256
+```
+
+macOS：
+
+```bash
+shasum -a 256 BiliNotes-0.2.6-macos-x64.dmg
 ```
 
 ### 许可证

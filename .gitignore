@@ -47,3 +47,6 @@ tests/_*.json
 tests/_demo_caption/
 .screens/
 .tmp_test/
+
+# macOS 构建产物（dmg / artifact 下载）
+mac-dist/
