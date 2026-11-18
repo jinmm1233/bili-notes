@@ -12,6 +12,8 @@ numpy>=1.26
 imagehash>=4.3
 qrcode>=7.4
 pypinyin>=0.51
+# 繁简转换：打包时 collect_data_files("zhconv") 需要它，冻结自检也依赖
+zhconv>=1.4
 # 原生窗口（Edge WebView2；Win10/11 系统自带 WebView2 运行时）
 pywebview>=5.4
 # 导出 Word（同时装到项目内 vendor/ 目录，避免污染系统环境）
