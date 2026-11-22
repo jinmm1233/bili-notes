@@ -14,9 +14,13 @@ on:
           - x64
         default: all
       release:
-        description: '同时上传到对应 tag 的 Release（需已存在 tag）'
+        description: '同时上传到 Release（需已存在 tag）'
         type: boolean
         default: false
+      release_tag:
+        description: 'release=true 时上传到哪个 tag（留空则用当前 ref）'
+        type: string
+        default: ''
   push:
     tags:
       - 'v*'
@@ -151,9 +155,13 @@ jobs:
           retention-days: 30
 
       - name: Upload to Release (optional)
-        if: ${{ inputs.release && startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ inputs.release && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DMG: ${{ env.DMG }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          gh release upload "${{ github.ref_name }}" "$DMG" "$DMG.sha256" --clobber
+          TAG="${RELEASE_TAG:-$REF_NAME}"
+          echo "uploading to release tag: $TAG"
+          gh release upload "$TAG" "$DMG" "$DMG.sha256" --clobber
