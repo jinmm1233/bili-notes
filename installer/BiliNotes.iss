@@ -13,7 +13,7 @@
 ; ============================================================================
 
 #define MyAppName "BiliNotes"
-#define MyAppVersion "0.2.6"
+#define MyAppVersion "0.2.7"
 #define MyAppPublisher "BiliNotes"
 #define MyAppExeName "BiliNotes.exe"
 
@@ -26,7 +26,7 @@ AppPublisher={#MyAppPublisher}
 ; 那是 Inno Setup 的 Setup Loader 给安装器加的标记，全生态都这样，
 ; 去掉它得关掉 UseSetupLdr（包体积翻倍、安装器行为改变，不划算）。
 ; 用户真正会看的地方 —— 安装后的程序属性、控制面板「卸载程序」列表 ——
-; 显示的都是干净的 0.2.6。
+; 显示的都是干净的 0.2.7。
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoDescription={#MyAppName} 安装程序
 DefaultDirName={autopf}\{#MyAppName}

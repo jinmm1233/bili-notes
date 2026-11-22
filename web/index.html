@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BiliNotes · B站视频知识库</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23fb7299'/%3E%3Cpath d='M7 9h10M7 13h6' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<!-- 窗口/任务栏图标：与安装包、主程序统一用 icon.svg（深蓝文档+播放键），
+     不再用简化版的粉块两横线。带版本参数，避免 Edge 应用窗口缓存旧图标。 -->
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=20261122a">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png?v=20261122a">
+<link rel="apple-touch-icon" href="/static/icon-192.png?v=20261122a">
 <!-- 主题要在样式生效前落定，否则深色皮肤会先闪一帧白 -->
 <script>
 (function(){
@@ -15,7 +19,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','aurora'); }
 })();
 </script>
-<link rel="stylesheet" href="/static/app.css?v=20261111c">
+<link rel="stylesheet" href="/static/app.css?v=20261122a">
 <!-- 数学公式（矩阵/行列式/分式）用 KaTeX 渲染，资源随包分发，离线可用 -->
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 </head>
@@ -1024,8 +1028,14 @@
 </dialog>
 
 <div class="toast" id="toast" hidden></div>
+<div class="upd-toast" id="updToast" hidden>
+  <span class="upd-toast-dot"></span>
+  <span class="upd-toast-text" id="updToastText">发现新版本</span>
+  <button class="upd-toast-go" id="updToastGo">去看看</button>
+  <button class="upd-toast-x" id="updToastX" title="不再提示这个版本">×</button>
+</div>
 
 <script src="/static/vendor/katex/katex.min.js"></script>
-<script src="/static/app.js?v=20261111c"></script>
+<script src="/static/app.js?v=20261122a"></script>
 </body>
 </html>

@@ -3132,6 +3132,45 @@ async function installUpdate() {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------- 更新轻提示：发现新版右下角冒一条，不打断操作 ----------
+   同一个版本只提示一次：用户点「去看看」或关掉都记下来，下次启动不再弹；
+   等真出了新版本（版本号变了）才会再提示。隐私模式存不了就本次记住。 */
+const UPD_SEEN_KEY = 'bn.updateNotified';
+function updateSeenVersion() {
+  try { return localStorage.getItem(UPD_SEEN_KEY) || ''; } catch (_) { return ''; }
+}
+function markUpdateSeen(ver) {
+  try { localStorage.setItem(UPD_SEEN_KEY, ver || ''); } catch (_) { /* 隐私模式忽略 */ }
+}
+function showUpdateToast(d) {
+  const box = $('updToast');
+  if (!box || !d || !d.has_update || !d.latest) return;
+  if (updateSeenVersion() === d.latest) return;       // 这个版本提示过了
+  box.dataset.ver = d.latest;
+  $('updToastText').innerHTML = `发现新版本 <b>v${esc(d.latest)}</b>，去设置页下载更新`;
+  box.hidden = false;
+}
+function hideUpdateToast(remember) {
+  const box = $('updToast');
+  if (!box) return;
+  if (remember && box.dataset.ver) markUpdateSeen(box.dataset.ver);
+  box.hidden = true;
+}
+/* 启动时的 /auto 只负责触发后台线程，结果要等它写完状态文件才读得到。
+   started=true 就多轮询几次，started=false（limit/未配置）只查一次缓存。 */
+function watchUpdateHint(waitForCheck) {
+  let tries = 0;
+  const max = waitForCheck ? 12 : 1;   // 最多 ~18 秒，覆盖 6 秒网络超时
+  const tick = async () => {
+    try {
+      const d = await api('/api/update/status');
+      if (d.has_update) { showUpdateToast(d); return; }
+    } catch (_) { /* 拿不到状态就算了，绝不打扰 */ }
+    if (++tries < max) setTimeout(tick, 1500);
+  };
+  tick();
+}
+
 /* ---------- 手机访问（双端） ----------
    开关只改配置，监听地址要重启才变；口令是每次请求现查的，换了立刻生效。 */
 function renderLan(d) {
@@ -3648,6 +3687,8 @@ function bindEvents() {
   $('btnUpdRelease').onclick = () => {
     if (updReleaseUrl) window.open(updReleaseUrl, '_blank', 'noopener');
   };
+  $('updToastGo').onclick = () => { hideUpdateToast(true); switchView('settings'); };
+  $('updToastX').onclick = () => hideUpdateToast(true);
   $('updRepo').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') $('btnUpdSave').click();
   });
@@ -4116,8 +4157,11 @@ async function init() {
     }
   }).catch(() => {});
   api('/api/settings').then(updateLlmDot).catch(() => {});
-  // 静默查更新：后端自己限频（12 小时），连不上也不报错、不阻塞首屏
-  api('/api/update/auto', { method: 'POST' }).catch(() => {});
+  // 静默查更新：后端自己限频（12 小时），连不上也不报错、不阻塞首屏。
+  // 后台线程检查完才有结果，拿 started 决定要不要多等几轮，再弹右下角轻提示。
+  api('/api/update/auto', { method: 'POST' })
+    .then((r) => { if (r && r.started) watchUpdateHint(true); else watchUpdateHint(false); })
+    .catch(() => {});
   updateDueBadge();
 
   window.addEventListener('hashchange', () => {
