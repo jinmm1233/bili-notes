@@ -7,7 +7,7 @@
 |---|---|---|---|
 | Windows 10/11 | `BiliNotes-setup-0.2.7.exe` | 214.3 MB（224,668,018 字节） | x64 |
 
-SHA256：`2b7d027d3dee6cc601fe9dad226307c608dfc9d6d6f5d13401c6c118de58c5b4`
+SHA256：`7bd7ef2dcb351a7a1422fc649645af913c80eb2343a07cfd835660e7812c0edb`
 
 ### 本次更新
 

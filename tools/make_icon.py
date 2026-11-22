@@ -48,12 +48,12 @@ def _params(size: int):
     if size >= 48:
         return 2.00, True, 5.0, 19.0
     if size >= 32:
-        return 2.35, True, 5.2, 19.0
+        return 2.30, True, 5.1, 19.0
     if size >= 24:
-        return 2.70, False, 5.6, 18.6
+        return 2.55, False, 5.3, 18.8
     if size >= 20:
-        return 3.05, False, 6.0, 18.4
-    return 3.45, False, 6.4, 18.2
+        return 2.80, False, 5.2, 18.8
+    return 2.90, False, 5.0, 19.0
 
 
 def render(size: int) -> Image.Image:
@@ -116,18 +116,20 @@ SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100"
 
 
 def main() -> int:
-    images = [render(size) for size in SIZES]
+    # 统一以 256px 的完整设计为准：先画一张 256（内部 4x 超采样到 1024），
+    # 再等比缩到所有尺寸，保证每个尺寸形状完全一致，只差分辨率。
+    master = render(256)
+    images = [master.resize((s, s), Image.LANCZOS) for s in SIZES]
     build_ico(images, ROOT / "app.ico")
 
     images[-1].save(ROOT / "app_icon_preview.png")
-    images[SIZES.index(32)].resize((128, 128), Image.NEAREST).save(
-        ROOT / "app_icon_preview_32.png")
 
     (ROOT / "web" / "icon.svg").write_text(SVG, encoding="utf-8")
     for s in (192, 512):
-        render(s).save(ROOT / "web" / f"icon-{s}.png", format="PNG")
+        master.resize((s, s), Image.LANCZOS).save(
+            ROOT / "web" / f"icon-{s}.png", format="PNG")
 
-    print(f"已生成 app.ico（{len(SIZES)} 个尺寸）+ 预览图 + web 图标")
+    print(f"已生成 app.ico（{len(SIZES)} 个尺寸，统一由 256 缩放）+ 预览图 + web 图标")
     return 0
 
 
