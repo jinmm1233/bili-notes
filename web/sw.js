@@ -10,7 +10,7 @@
  *   /api/library/*/file/* 笔记里的截图（缓存优先，读哪篇缓存哪篇）
  */
 
-const VERSION = 'bn-offline-v1';
+const VERSION = 'bn-offline-v2';
 const SHELL = [
   '/offline',
   '/static/vendor/katex/katex.min.css',
