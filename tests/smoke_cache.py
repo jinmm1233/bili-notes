@@ -192,6 +192,40 @@ def test_task_manager_cleanup():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_dir_size_matches_walk():
+    """dir_size 必须和 os.walk 的结果一致，且不能漏掉深层目录。
+
+    这里守的是 0.2.10 的性能修复：改用 os.scandir 后统计口径不能变
+    （旧实现是 Path.rglob + 逐文件 stat，8.7 万文件要 47 秒）。
+    """
+    import os
+
+    root = Path(tempfile.mkdtemp())
+    try:
+        deep = root / "a" / "b" / "c"
+        (deep / "d").mkdir(parents=True)
+        (root / "top.bin").write_bytes(b"12345")
+        (root / "a" / "mid.bin").write_bytes(b"1234567")
+        (deep / "leaf.bin").write_bytes(b"123")
+        (deep / "d" / "deeper.bin").write_bytes(b"1234567890")
+        (root / "empty").mkdir()
+
+        want = 0
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                want += (Path(dirpath) / name).stat().st_size
+
+        got = cache_clean.dir_size(root)
+        assert got == want, f"dir_size={got} 与 os.walk={want} 不一致"
+        assert got == 5 + 7 + 3 + 10, got
+        assert cache_clean.dir_size(root / "empty") == 0
+        assert cache_clean.dir_size(root / "top.bin") == 5
+        assert cache_clean.dir_size(root / "not-exist") == 0
+        print("  dir_size：递归口径与 os.walk 一致（含深层目录、空目录、单文件）")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("cache_clean smoke:")
     test_usage()
@@ -202,4 +236,5 @@ if __name__ == "__main__":
     test_policy_config()
     test_render_uses_output_copy()
     test_task_manager_cleanup()
+    test_dir_size_matches_walk()
     print("all passed")

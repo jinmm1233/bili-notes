@@ -12,6 +12,7 @@ video.mp4 + audio.m4a 就有 70MB 左右，处理完再也没人读它。
 """
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -45,7 +46,12 @@ def human(size: float) -> str:
 
 
 def dir_size(path: Path) -> int:
-    """目录（或文件）占用字节数；不存在返回 0。"""
+    """目录（或文件）占用字节数；不存在返回 0。
+
+    用 os.scandir 而不是 Path.rglob：Windows 上 scandir 的 DirEntry 自带
+    文件大小（来自目录枚举），rglob + stat 则是每个文件一次 CreateFile，
+    8.7 万个文件的缓存目录要 47 秒，足以把 /api/settings 拖到超时。
+    """
     if not path.exists():
         return 0
     if path.is_file():
@@ -54,10 +60,19 @@ def dir_size(path: Path) -> int:
         except OSError:
             return 0
     total = 0
-    for p in path.rglob("*"):
+    stack = [str(path)]
+    while stack:
+        cur = stack.pop()
         try:
-            if p.is_file():
-                total += p.stat().st_size
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
         except OSError:
             continue
     return total
