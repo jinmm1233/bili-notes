@@ -42,19 +42,21 @@ with tempfile.TemporaryDirectory() as tmp:
        "自建镜像（hf_endpoint）仍然生效")
 
 # ---- 2. 第一个源失败时自动换源 ----
-BLOB = b"x" * 4096
-
-
 def fake_download(url, dest, on_chunk=None, cancel=None, timeout=180.0):
     if "modelscope.cn" in url:
         raise ConnectionError("modelscope 连不上")
-    if url.endswith("vocabulary.txt") or url.endswith("preprocessor_config.json"):
-        raise FileNotFoundError(url)      # 兜底源也没有的可选文件
+    name = url.rsplit("/", 1)[-1]
+    if name in ("config.json", "tokenizer.json"):
+        body = b'{"x":"' + b"y" * transcribe._MIN_BYTES[name] + b'"}'
+    elif name == "model.bin":
+        body = b"\0" * transcribe._MIN_BYTES["model.bin"]
+    else:                                 # vocabulary.txt
+        body = b"token\n" * (transcribe._MIN_BYTES["vocabulary.txt"] // 6 + 1)
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
-    Path(dest).write_bytes(BLOB)
+    Path(dest).write_bytes(body)
     if on_chunk:
-        on_chunk(len(BLOB))
-    return len(BLOB)
+        on_chunk(len(body))
+    return len(body)
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -69,7 +71,8 @@ with tempfile.TemporaryDirectory() as tmp:
     ok((model_dir / "model.bin").is_file(), "换源后 model.bin 下载完成")
     ok((model_dir / "config.json").is_file(), "换源后 config.json 下载完成")
     ok((model_dir / "tokenizer.json").is_file(), "换源后 tokenizer.json 下载完成")
-    ok(not (model_dir / "vocabulary.txt").exists(), "可选文件各源都没有时跳过，不报错")
+    ok((model_dir / "vocabulary.txt").is_file(), "换源后 vocabulary.txt 下载完成（CT2 必需）")
+    ok(not (model_dir / "preprocessor_config.json").exists(), "不请求推理用不到的文件")
     ok(model_dir.name == "fw-base", f"模型目录名正确（{model_dir.name}）")
 
 # ---- 3. 全部源都失败时，错误信息要说明换过几个源 ----
@@ -97,4 +100,4 @@ print()
 if FAILED:
     print(f"{FAILED} 项未通过：模型下载源的兜底逻辑有问题。")
     sys.exit(1)
-print("全部通过：ModelScope 优先、失败自动换源、可选文件正确跳过。")
+print("全部通过：ModelScope 优先、失败自动换源、必需文件齐全。")

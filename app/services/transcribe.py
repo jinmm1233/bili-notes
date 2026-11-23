@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -52,10 +53,19 @@ _MODEL_SIZE_MB = {
     "large-v3": 3090,
 }
 
-# 下载哪些文件就够推理了，其余（如 .txt 词表、onnx 目录）不下，省一半体积
-_MODEL_FILES = ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt", "preprocessor_config.json"]
-# 这几个不是每个仓库都有，404 时跳过即可，不能算下载失败
-_OPTIONAL_MODEL_FILES = {"vocabulary.txt", "preprocessor_config.json"}
+# 下载哪些文件就够推理了，其余（onnx 目录、README 等）不下，省一半体积。
+# 这四个都是 CT2 推理必需的：缺 vocabulary.txt 直接报
+# "Cannot load the vocabulary from the model directory"，
+# 缺 tokenizer.json 则会尝试联网取词表，离线机器必失败。
+_MODEL_FILES = ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt"]
+_REQUIRED_FILES = tuple(_MODEL_FILES)
+_JSON_FILES = {"config.json", "tokenizer.json"}
+_MIN_BYTES = {
+    "config.json": 100,
+    "model.bin": 5 * 1048576,
+    "tokenizer.json": 100_000,
+    "vocabulary.txt": 10_000,
+}
 
 # ModelScope 上的同款 faster-whisper 仓库。国内实测 ~5MB/s，
 # 比 hf-mirror 的 ~100KB/s 快约 50 倍；新机器装完首次转写不用再等二十分钟。
@@ -229,6 +239,87 @@ def _http_download(
     return stream_download(url, dest, on_chunk=on_chunk, cancel=cancel, timeout=timeout)
 
 
+def _file_problem(path: Path, name: str) -> str | None:
+    """单文件的可用性检查，返回问题描述；没问题返回 None。
+
+    只做便宜检查：存在、体积够、开头像回事。真正的校验交给加载，
+    加载再失败就走 _rebuild_model 重建目录。
+    """
+    if not path.is_file():
+        return "缺失"
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"读不到（{exc}）"
+    # 先看开头像不像该文件，再看体积：下到错误页时体积往往也离谱，
+    # 直接说「内容像网页」比说「只有 35 字节」更有用
+    if name in _JSON_FILES:
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(1)
+        except OSError:
+            return "读不到"
+        if head != b"{":
+            return "内容不是 JSON（可能下到了错误页）"
+    elif name == "vocabulary.txt":
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(64).lstrip()
+        except OSError:
+            return "读不到"
+        if head.startswith(b"<"):
+            return "内容像网页而不是词表"
+    need = _MIN_BYTES.get(name, 1)
+    if size < need:
+        return f"只有 {size} 字节，没下完"
+    return None
+
+
+def _model_problems(target: Path) -> dict[str, str]:
+    """返回 {文件名: 问题}，空字典表示这套模型文件齐全可用。"""
+    problems: dict[str, str] = {}
+    for name in _REQUIRED_FILES:
+        problem = _file_problem(target / name, name)
+        if problem:
+            problems[name] = problem
+    return problems
+
+
+def _rebuild_model(
+    settings: Settings,
+    model_path: Path,
+    on_progress: ProgressFn | None,
+    cancel: CancelFn | None,
+) -> Path | None:
+    """加载失败时把旧目录挪走重下一次，成功返回新目录，失败返回 None。
+
+    0.2.10 及更早版本只看 model.bin 在不在就认为装好了，下载中途退出
+    会留下「有 model.bin、缺词表」的半成品，之后每次转写都报
+    Cannot load the vocabulary。这里顺手把这种历史残留治好。
+    """
+    stale = model_path.with_name(f"{model_path.name}.bad-{int(time.time())}")
+    try:
+        model_path.rename(stale)
+    except OSError as exc:
+        log.warning("旧模型目录挪不动，跳过自动修复：%s", exc)
+        return None
+    log.warning("模型加载失败，已把旧目录挪到 %s，重新下载", stale.name)
+    try:
+        fresh = ensure_model(settings, on_progress, cancel)
+    except Exception:  # noqa: BLE001
+        # 重下失败就把旧目录放回去，至少不丢用户已有的数据
+        try:
+            stale.rename(model_path)
+        except OSError:
+            pass
+        return None
+    try:
+        shutil.rmtree(stale, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return fresh
+
+
 def ensure_model(
     settings: Settings,
     on_progress: ProgressFn | None = None,
@@ -236,21 +327,35 @@ def ensure_model(
 ) -> Path:
     """确保模型已下载到本地，返回模型目录。
 
-    已有完整模型时立即返回（不联网）。否则按文件逐个下，
+    已有完整模型时立即返回（不联网）。只缺文件时按缺的补下，
     进度用已下载字节 / Content-Length 计算，比轮询目录体积准得多。
     """
     model = settings.asr_model
     target = _model_dir(settings, model)
 
-    if (target / "model.bin").is_file() and (target / "config.json").is_file():
+    missing = _model_problems(target)
+    if not missing:
         return target
 
     target.mkdir(parents=True, exist_ok=True)
     sources = _model_sources(settings, model)
     expected_mb = _MODEL_SIZE_MB.get(model, 484)
 
+    # 已经有一部分文件时，进度按「还差多少」算，不然一上来就 95%
+    first_time = not any((target / n).is_file() for n in _REQUIRED_FILES)
+    pending_mb = expected_mb if first_time else sum(
+        expected_mb if n == "model.bin" else _MIN_BYTES.get(n, 0) / 1048576
+        for n in missing
+    ) or expected_mb
+
     if on_progress:
-        on_progress(0.0, f"首次使用，正在下载 {model} 模型（约 {expected_mb:.0f}MB）…")
+        if first_time:
+            on_progress(0.0, f"首次使用，正在下载 {model} 模型（约 {expected_mb:.0f}MB）…")
+        else:
+            on_progress(
+                0.0,
+                f"模型文件不完整（缺 {'、'.join(missing)}），正在补齐…",
+            )
 
     started = time.time()
     done_bytes = [0]          # 已完成的文件累计
@@ -263,16 +368,18 @@ def ensure_model(
             return
         last_emit[0] = now
         done_mb = (done_bytes[0] + current_bytes) / 1048576
-        pct = min(99.0, done_mb / expected_mb * 100.0)
+        pct = min(99.0, done_mb / pending_mb * 100.0)
         speed = done_mb / max(0.1, now - started) * 60
         on_progress(
             pct,
-            f"下载 {model} 模型 {pct:.0f}%（{done_mb:.0f}/{expected_mb:.0f}MB，"
-            f"{speed:.0f}MB/分钟）",
+            f"{'下载' if first_time else '补齐'} {model} 模型 {pct:.0f}%"
+            f"（{done_mb:.0f}/{pending_mb:.0f}MB，{speed:.0f}MB/分钟）",
         )
 
     for name in _MODEL_FILES:
         dest = target / name
+        if name not in missing:
+            continue                    # 这个文件已经好了，不重复下
         last_exc: Exception | None = None
         ok = False
         for pass_no in (1, 2):
@@ -309,21 +416,21 @@ def ensure_model(
 
         if ok:
             continue
-        if name in _OPTIONAL_MODEL_FILES and isinstance(last_exc, FileNotFoundError):
-            # vocabulary.txt / preprocessor_config.json 并非每个仓库都有
-            log.debug("可选模型文件各源都没有，跳过：%s", name)
-            continue
         got = done_bytes[0] / 1048576
         raise DependencyMissingError(
-            f"语音模型 {model} 下载失败（已下 {got:.0f}/{expected_mb:.0f}MB）："
+            f"语音模型 {model} 下载失败（已下 {got:.0f}/{pending_mb:.0f}MB）："
             f"{str(last_exc)[:110]}。已自动换过 {len(sources)} 个下载源，"
             "可重试继续下载（支持断点续传），或在设置里换成 tiny 档位（仅 75MB）。",
             detail={"models_dir": str(target), "model": model, "sources": sources},
         ) from last_exc
 
-    if not (target / "model.bin").is_file():
+    still = _model_problems(target)
+    if still:
+        detail = "；".join(f"{name} {why}" for name, why in still.items())
         raise DependencyMissingError(
-            "模型下载不完整（缺少 model.bin），请重试或在设置里换用 tiny 档位"
+            f"语音模型 {model} 文件不完整（{detail}），请重试，"
+            "或在设置里换用 tiny 档位",
+            detail={"models_dir": str(target), "model": model, "problems": still},
         )
 
     if on_progress:
@@ -454,10 +561,28 @@ def transcribe(
             local_files_only=True,
         )
     except Exception as exc:
-        raise DependencyMissingError(
-            f"语音模型 {settings.asr_model} 加载失败：{str(exc)[:160]}",
-            detail={"model_dir": str(model_path)},
-        ) from exc
+        # 老版本留下的半成品目录（有 model.bin、缺词表）文件检查未必能识别，
+        # 这里再兜一次：整目录重建后重试，成功就当无事发生。
+        fresh = _rebuild_model(settings, model_path, on_progress, cancel)
+        if fresh is not None:
+            model_path = fresh
+            try:
+                model = WhisperModel(
+                    str(model_path),
+                    device=settings.asr_device,
+                    compute_type=settings.asr_compute_type,
+                    local_files_only=True,
+                )
+            except Exception as retry_exc:  # noqa: BLE001
+                raise DependencyMissingError(
+                    f"语音模型 {settings.asr_model} 加载失败：{str(retry_exc)[:160]}",
+                    detail={"model_dir": str(model_path)},
+                ) from retry_exc
+        else:
+            raise DependencyMissingError(
+                f"语音模型 {settings.asr_model} 加载失败：{str(exc)[:160]}",
+                detail={"model_dir": str(model_path)},
+            ) from exc
 
     load_elapsed = time.time() - started
 
