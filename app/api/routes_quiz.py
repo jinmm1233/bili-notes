@@ -46,6 +46,31 @@ def _client(request: Request) -> LLMClient:
     return client
 
 
+def _load_notes(settings, note_ids: list[str], collection: str) -> list[dict[str, Any]]:
+    """按 id 或收藏夹取笔记，**必须带正文**。
+
+    library.scan() 只给列表页用的元信息（标题、封面、字数……），没有 markdown。
+    之前合集分支直接拿 scan() 的结果去出题，source_md 全是 0 字，
+    build() 在「材料不足 300 字」那一步就返回空——一篇都没真正问过模型，
+    用户看到的就是「模型没给出可用题目」。这里统一走 get_note()。
+    """
+    ids = [str(i) for i in note_ids if i][:12]
+    if not ids and collection:
+        ids = [
+            str(n.get("id"))
+            for n in library.scan(settings)
+            if (n.get("collection") or library.DEFAULT_COLLECTION) == collection
+        ][:12]
+
+    notes: list[dict[str, Any]] = []
+    for note_id in ids:
+        try:
+            notes.append(library.get_note(settings, note_id))
+        except (FileNotFoundError, ValueError):
+            continue
+    return notes
+
+
 @router.get("/quiz")
 def list_quizzes() -> dict[str, Any]:
     settings = get_settings()
@@ -68,17 +93,7 @@ def generate_quiz(body: GenerateIn, request: Request) -> dict[str, Any]:
     settings = get_settings()
     kinds = [k for k in body.kinds if k in quiz_svc.KINDS] or list(quiz_svc.DEFAULT_KINDS)
 
-    notes: list[dict[str, Any]] = []
-    for note_id in body.note_ids[:12]:
-        try:
-            notes.append(library.get_note(settings, note_id))
-        except (FileNotFoundError, ValueError):
-            continue
-    if not notes and body.collection:
-        notes = [
-            n for n in library.scan(settings)
-            if (n.get("collection") or library.DEFAULT_COLLECTION) == body.collection
-        ][:12]
+    notes = _load_notes(settings, body.note_ids, body.collection)
     if not notes:
         raise HTTPException(400, "先选几篇笔记（或一个收藏夹）")
 
@@ -87,7 +102,9 @@ def generate_quiz(body: GenerateIn, request: Request) -> dict[str, Any]:
         if len(notes) == 1:
             title = str(notes[0].get("title") or "自测卷")
         else:
-            name = notes[0].get("collection") or library.DEFAULT_COLLECTION
+            name = (body.collection
+                    or (notes[0].get("meta") or {}).get("collection")
+                    or library.DEFAULT_COLLECTION)
             title = f"{name} · {len(notes)} 篇"
 
     per_note = max(1, round(body.count / len(notes)))
