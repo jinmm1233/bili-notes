@@ -63,4 +63,8 @@ DeepSeek 从 2026-08 起开放视觉能力，9 月并进了 `deepseek-flash`（�
 文件    BiliNotes-setup-0.2.10.exe
 大小    224,681,644 字节
 SHA256  8f8ad6bcd576d0e1c74d618f13e4914e13882fa7d47d29c7d489d6e30e1e3e2a
+
+文件    BiliNotes-0.2.10-macos-x64.dmg
+大小    251,668,414 字节
+SHA256  e943769c7a872b623e7c75e489129d2710ca8868b8556da904edeb51299d365e
 ```

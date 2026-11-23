@@ -171,14 +171,17 @@ def main() -> int:
     for path in (exe, sums):
         old = by_name.get(path.name)
         local_size = path.stat().st_size
-        if old and int(old.get("size") or 0) == local_size:
+        # 只认真正传完的资产：中断的上传会留下 state=starter 的占位记录，
+        # 大小字段看着是对的，但直链 404。这种必须先删再传。
+        if (old and old.get("state") == "uploaded"
+                and int(old.get("size") or 0) == local_size):
             remote_digest = str(old.get("digest") or "")
             if not remote_digest or remote_digest.lower() == f"sha256:{sha256(path)}":
                 print(f"资产已存在且一致，跳过：{path.name}")
                 continue
         if old:
             gh.api("DELETE", f"{base}/assets/{old['id']}")
-            print(f"  删除同名旧资产：{path.name}")
+            print(f"  删除同名旧资产：{path.name}（state={old.get('state')}）")
         url = f"{UPLOAD}{base}/{rel['id']}/assets?name={path.name}"
         last_error = None
         for attempt in range(1, 4):
