@@ -47,4 +47,8 @@
 文件    BiliNotes-setup-0.2.13.exe
 大小    224,687,074 字节
 SHA256  d8091302d14b6a1d13405ec5b2459858b795f9b7c9ff533d661d6fdcae465155
+
+文件    BiliNotes-0.2.13-macos-x64.dmg
+大小    249,623,709 字节
+SHA256  0e3888adef023905124f42ee47eed543460e2df80d189d0b9b7b8310c2460dd1
 ```
