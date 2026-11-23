@@ -35,8 +35,21 @@ VC_DLLS = (
     "msvcp140.dll", "MSVCP140_1.dll", "MSVCP140_2.dll",
     "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll",
 )
-PROBES = ("ctranslate2", "onnxruntime", "ctranslate2,onnxruntime",
-          "faster_whisper", "rapidocr_onnxruntime", "app.services.anchors")
+PROBES = (
+    "ctranslate2", "onnxruntime", "ctranslate2,onnxruntime",
+    "faster_whisper", "rapidocr_onnxruntime", "app.services.anchors",
+    # 0.2.7 事故复盘：yt-dlp 是**延迟导入**（点「生成笔记」才 import），
+    # 之前的探针只覆盖重型原生库，没碰这条链，于是 backports.zstd
+    # 半残包（只有 .pyd、没有 __init__.py）一路漏到了线上。
+    "yt_dlp", "urllib3,yt_dlp",
+    "app.services.downloader", "app.services.pipeline",
+    # 导出链路同样是延迟导入：缺一个就静默失败，用户点导出才发现
+    # latex2mathml / mathml2omml 放在 vendor/ 下，只有 import app 之后
+    # app/__init__.py 才会把 vendor 加进 sys.path；不带 app 会误报 ImportError。
+    "app,docx,lxml.etree,latex2mathml.converter,mathml2omml",
+    "app.services.export_docx,app.services.export_pdf",
+    "qrcode,PIL,zhconv,pypinyin",
+)
 REQUIRED = (
     "BiliNotes.exe", "BiliNotes-console.exe",
     "_internal/onnxruntime/capi/onnxruntime.dll",
@@ -46,6 +59,10 @@ REQUIRED = (
     "_internal/web/app.css", "_internal/web/offline.html",
     "_internal/bin/ffmpeg.exe", "_internal/bin/ffprobe.exe",
     "_internal/vendor",
+    # 这些数据文件缺了不会报错、但功能会静默失效——必须显式断言
+    "_internal/docx/templates/default.docx",   # python-docx 的 Document() 模板
+    "_internal/zhconv/zhcdict.json",           # 繁简转换字典
+    "_internal/certifi/cacert.pem",            # HTTPS 根证书
 )
 MUST_200 = ("/healthz", "/api/env", "/", "/static/app.js", "/api/update/status")
 OPTIONAL = ("/api/quiz", "/api/wordbooks/missing", "/api/library")
@@ -77,6 +94,12 @@ def check_files(dist: Path) -> None:
     vendor = dist / "_internal" / "vendor"
     n = len(list(vendor.rglob("*.py"))) if vendor.is_dir() else 0
     record(n > 0, "vendor/ 含 Python 模块", f"{n} 个 .py")
+
+    # 绝不能出现的半残包：0.2.7 就是它把 yt-dlp 整条导入链搞崩的。
+    # 判定标准是"存在即失败"——因为只要它在，urllib3 就会以为 zstd 可用。
+    bad = dist / "_internal" / "backports"
+    record(not bad.exists(), "backports 未被打包（0.2.7 崩溃根因）",
+           "已排除" if not bad.exists() else "★ 残留会让 yt-dlp 导入崩溃，请检查 build.spec excludes")
 
 
 def check_vc_runtime(dist: Path) -> None:

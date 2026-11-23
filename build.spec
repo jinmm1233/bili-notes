@@ -119,7 +119,16 @@ a = Analysis(  # noqa: F821
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PySide6", "pytest"],
+    excludes=[
+        "tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PySide6", "pytest",
+        # 0.2.7 线上事故根因：backports.zstd 只被打进 C 扩展（_zstd.pyd）、
+        # 漏了 __init__.py，import 出来是空壳命名空间包——urllib3 以为 zstd
+        # 可用，取 ZstdError 时 AttributeError，yt_dlp 导入即崩。
+        # 只能排子模块，**不能排父包 backports**：PyInstaller 的 setuptools
+        # hook 会给父包做 alias，排掉父包会直接 ValueError 打包失败。
+        # 父包留空壳无害——子模块不在，urllib3 的 import 仍会 ImportError 降级。
+        "backports.zstd",
+    ],
     noarchive=False,
 )
 
@@ -178,6 +187,18 @@ import os as _os  # noqa: E402
 import shutil as _shutil  # noqa: E402
 
 _internal = ROOT / "dist" / "BiliNotes" / "_internal"
+
+# ---- 双保险：产物里绝不能留 backports/zstd ----
+# 0.2.7 的崩溃就是它只带进了 _zstd.pyd、没有 __init__.py，urllib3 误判
+# zstd 可用后在取属性时炸掉，整条 yt-dlp 导入链跟着崩。模块图行为会随
+# PyInstaller 版本变化，所以这里不问原因、一律物理删除。
+_backports = _internal / "backports"
+if _backports.is_dir():
+    _shutil.rmtree(_backports, ignore_errors=True)
+    print(f"[backports] 已从产物移除 {_backports}")
+else:
+    print("[backports] 产物中不存在（符合预期）")
+
 _system32 = Path(_os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
 _vc_dlls = (
     "msvcp140.dll", "MSVCP140_1.dll", "MSVCP140_2.dll",

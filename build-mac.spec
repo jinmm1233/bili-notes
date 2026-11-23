@@ -99,7 +99,13 @@ a = Analysis(  # noqa: F821
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PySide6", "pytest"],
+    excludes=[
+        "tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PySide6", "pytest",
+        # 与 Windows 同一个坑：backports.zstd 只有 C 扩展时 urllib3 会误判可用。
+        # 只能排子模块——排父包 backports 会和 PyInstaller 的 setuptools
+        # namespace hook 冲突，直接 ValueError 打包失败。
+        "backports.zstd",
+    ],
     noarchive=False,
 )
 
@@ -152,3 +158,15 @@ app = BUNDLE(  # noqa: F821
         "LSMinimumSystemVersion": "10.15.0",
     },
 )
+
+# ---- 双保险：产物里不能留半残的 backports/zstd ----
+# 0.2.7 Windows 崩溃同因：只有 _zstd 扩展、没有 __init__.py，
+# urllib3 误判 zstd 可用后 AttributeError，yt-dlp 导入即崩。
+# onedir 与 .app 两份产物都要清；按"含 zstd 子目录"精确匹配，
+# 不会误伤 setuptools/_vendor/backports。
+import shutil as _shutil
+
+for _p in (ROOT / "dist").rglob("backports"):
+    if _p.is_dir() and (_p / "zstd").is_dir():
+        _shutil.rmtree(_p, ignore_errors=True)
+        print(f"[backports] removed {_p}")
