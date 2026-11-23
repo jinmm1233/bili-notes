@@ -66,6 +66,41 @@ const VIEW_LOADERS = {
 };
 let currentView = 'dashboard';
 
+/* 设置页：哪些改动不会即时保存（必须点右上角「保存设置」）。
+   看图服务商/模型名是 onchange 即存的（persistVision），这里故意不列，
+   免得用户改完下拉又被告知"没保存"。 */
+const SAVE_DIRTY_FIELDS = [
+  'setProvider', 'setAsr', 'setAsrLang', 'setAsrMixed', 'setDetail',
+  'setHd', 'setParallel', 'setPolish', 'setBilingual', 'setCaption',
+  'setVisionPick', 'setItinerary', 'setCachePolicy', 'setOutput',
+];
+const SAVE_TIP_KEY = 'bilinotes.settings.saveTipOff';
+let settingsDirty = false;
+
+function saveTipMuted() {
+  try { return localStorage.getItem(SAVE_TIP_KEY) === '1'; } catch (e) { return false; }
+}
+
+function markSettingsDirty() {
+  settingsDirty = true;
+  const btn = $('btnSaveAll');
+  if (btn) btn.classList.add('is-dirty');
+}
+
+function clearSettingsDirty() {
+  settingsDirty = false;
+  const btn = $('btnSaveAll');
+  if (btn) btn.classList.remove('is-dirty');
+}
+
+/* 每次进入设置页提醒一次；点了「不再提醒」就永久关掉 */
+function maybeShowSaveTip() {
+  if (saveTipMuted() || currentView !== 'settings') return;
+  const dlg = $('saveTipDlg');
+  if (!dlg || dlg.open) return;
+  try { dlg.showModal(); } catch (e) { /* 已有别的弹窗开着，下次再说 */ }
+}
+
 function switchView(name) {
   if (!VIEW_LOADERS[name]) return;
   currentView = name;
@@ -80,6 +115,8 @@ function switchView(name) {
   }
   $('reader').hidden = true;
   VIEW_LOADERS[name]().catch((e) => toast(e.message, true));
+  // 进设置页先提醒一次「记得保存」，等视图渲染出来再弹，别盖在空白上
+  if (name === 'settings') setTimeout(maybeShowSaveTip, 80);
 }
 
 /* ==================== 总览 ==================== */
@@ -3097,6 +3134,8 @@ async function loadSettings() {
   loadLan().catch(() => { /* 双端状态拿不到不影响其它设置 */ });
   loadWordbooks().catch(() => { /* 词库同理 */ });
   loadUpdate().catch(() => { /* 更新状态拿不到不影响其它设置 */ });
+  // 表单刚从服务端回填，此刻没有任何未保存的改动
+  clearSettingsDirty();
 }
 
 /* ==================== 软件更新 ====================
@@ -3772,6 +3811,7 @@ async function saveAll() {
   if (out) body.output_dir = out;
   try {
     await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
+    clearSettingsDirty();
     toast('设置已保存');
     await loadSettings();
   } catch (e) {
@@ -4173,6 +4213,21 @@ async function cleanExampleCards() {
   $('btnSaveVisionKey').onclick = () => saveVisionKey().catch((e) => toast(e.message, true));
   $('btnTest').onclick = testConn;
   $('btnSaveAll').onclick = saveAll;
+
+  // 设置页的保存提醒：知道了只关这一次，不再提醒写进 localStorage 永久关
+  $('saveTipOk').onclick = () => $('saveTipDlg').close();
+  $('saveTipNever').onclick = () => {
+    try { localStorage.setItem(SAVE_TIP_KEY, '1'); } catch (e) { /* 隐私模式 */ }
+    $('saveTipDlg').close();
+    toast('已关闭这个提醒；改动后「保存设置」仍会高亮');
+  };
+  // 这些控件改了不会即时落盘，标记一下让保存按钮闪起来
+  SAVE_DIRTY_FIELDS.forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    const ev = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+    el.addEventListener(ev, markSettingsDirty);
+  });
   $('setLan').onchange = (e) => toggleLan(e.target.checked);
   $('btnImportWords').onclick = () => $('wbFile').click();
   $('btnFillWords').onclick = fillWordDefinitions;

@@ -19,7 +19,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','aurora'); }
 })();
 </script>
-<link rel="stylesheet" href="/static/app.css?v=20261124a">
+<link rel="stylesheet" href="/static/app.css?v=20261124b">
 <!-- 数学公式（矩阵/行列式/分式）用 KaTeX 渲染，资源随包分发，离线可用 -->
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 </head>
@@ -1037,7 +1037,17 @@
   <button class="upd-toast-x" id="updToastX" title="不再提示这个版本">×</button>
 </div>
 
+<!-- 进入设置页时的保存提醒：改动不会自动保存 -->
+<dialog class="dlg save-tip-dlg" id="saveTipDlg">
+  <h3>改完记得点「保存设置」</h3>
+  <p class="hint">设置页的改动不会自动保存。调完右上角点一下「保存设置」才会生效，直接切走就丢了。</p>
+  <div class="dlg-foot">
+    <button class="btn ghost small never" id="saveTipNever">不再提醒</button>
+    <button class="btn primary small" id="saveTipOk">知道了</button>
+  </div>
+</dialog>
+
 <script src="/static/vendor/katex/katex.min.js"></script>
-<script src="/static/app.js?v=20261124a"></script>
+<script src="/static/app.js?v=20261124b"></script>
 </body>
 </html>

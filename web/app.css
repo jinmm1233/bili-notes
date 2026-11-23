@@ -862,6 +862,20 @@ select{cursor:pointer;appearance:none;
 }
 .toast.bad{background:var(--err)}
 
+/* 进入设置页的保存提醒弹窗（可「不再提醒」） */
+.save-tip-dlg{width:min(400px,92vw)}
+.save-tip-dlg .hint{font-size:12.5px;line-height:1.7;color:var(--muted);margin:0}
+.save-tip-dlg .dlg-foot{margin-top:20px;align-items:center}
+.save-tip-dlg .never{margin-right:auto}
+.btn.primary.is-dirty{animation:savePulse 1.8s ease-in-out infinite}
+@keyframes savePulse{
+  0%,100%{box-shadow:0 0 0 0 var(--warn-soft)}
+  50%{box-shadow:0 0 0 4px var(--warn-soft)}
+}
+@media (prefers-reduced-motion:reduce){
+  .btn.primary.is-dirty{animation:none;box-shadow:0 0 0 3px var(--warn-soft)}
+}
+
 /* 更新轻提示：右下角，不挡操作，可点进设置页；同版本只弹一次（JS 控制） */
 .upd-toast{
   position:fixed;right:24px;bottom:24px;z-index:95;
