@@ -54,6 +54,27 @@ _MODEL_SIZE_MB = {
 
 # 下载哪些文件就够推理了，其余（如 .txt 词表、onnx 目录）不下，省一半体积
 _MODEL_FILES = ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt", "preprocessor_config.json"]
+# 这几个不是每个仓库都有，404 时跳过即可，不能算下载失败
+_OPTIONAL_MODEL_FILES = {"vocabulary.txt", "preprocessor_config.json"}
+
+# ModelScope 上的同款 faster-whisper 仓库。国内实测 ~5MB/s，
+# 比 hf-mirror 的 ~100KB/s 快约 50 倍；新机器装完首次转写不用再等二十分钟。
+_MODELSCOPE_REPO = "pengzhendong/faster-whisper-{model}"
+
+
+def _model_sources(settings: Settings, model: str) -> list[str]:
+    """按实测速度排好序的下载源，前面的不通就自动换后面的。
+
+    ModelScope 优先，hf_endpoint（默认 hf-mirror）兜底；
+    自建镜像只要改 settings.hf_endpoint 就仍然生效。
+    """
+    sources = [
+        f"https://modelscope.cn/models/{_MODELSCOPE_REPO.format(model=model)}/resolve/master",
+    ]
+    mirror = (settings.hf_endpoint or "").rstrip("/")
+    if mirror:
+        sources.append(f"{mirror}/Systran/faster-whisper-{model}/resolve/main")
+    return sources
 
 # 相对实时的倍率（转写耗时 / 音频时长）。实测（i7-11370H 4核8线程、int8、beam=1、VAD，
 # 17 分钟音频）：tiny 133s = 0.13x，base 112s = 0.11x。
@@ -225,7 +246,7 @@ def ensure_model(
         return target
 
     target.mkdir(parents=True, exist_ok=True)
-    base_url = f"{settings.hf_endpoint.rstrip('/')}/Systran/faster-whisper-{model}/resolve/main"
+    sources = _model_sources(settings, model)
     expected_mb = _MODEL_SIZE_MB.get(model, 484)
 
     if on_progress:
@@ -252,29 +273,53 @@ def ensure_model(
 
     for name in _MODEL_FILES:
         dest = target / name
-        url = f"{base_url}/{name}"
-        try:
-            size = _http_download(
-                url, dest,
-                on_chunk=report,
-                cancel=cancel,
-                timeout=180.0,
-            )
-            done_bytes[0] += size
-        except FileNotFoundError:
-            # vocabulary.txt / preprocessor_config.json 并非每个仓库都有
-            log.debug("模型文件不存在，跳过：%s", name)
+        last_exc: Exception | None = None
+        ok = False
+        for pass_no in (1, 2):
+            all_404 = True
+            for base in sources:
+                url = f"{base}/{name}"
+                try:
+                    size = _http_download(
+                        url, dest,
+                        on_chunk=report,
+                        cancel=cancel,
+                        timeout=180.0,
+                    )
+                except FileNotFoundError:
+                    last_exc = FileNotFoundError(url)
+                    continue            # 这个源没有该文件，换下一个
+                except CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    all_404 = False
+                    log.warning("模型文件下载失败（%s，第 %d 轮）：%s", url, pass_no, exc)
+                    continue            # 换源；已下部分保留，下个源可续传
+                else:
+                    done_bytes[0] += size
+                    ok = True
+                    break
+            if ok:
+                break
+            if all_404:
+                break                   # 每个源都没有，重试也没意义
+            if pass_no == 1:
+                time.sleep(1.0)         # 所有源都失败时整体再来一轮（断点续传）
+
+        if ok:
             continue
-        except CancelledError:
-            raise
-        except Exception as exc:
-            got = done_bytes[0] / 1048576
-            raise DependencyMissingError(
-                f"语音模型 {model} 下载失败（已下 {got:.0f}/{expected_mb:.0f}MB）："
-                f"{str(exc)[:110]}。可重试继续下载（支持断点续传），"
-                "或在设置里换成 tiny 档位（仅 75MB）。",
-                detail={"models_dir": str(target), "model": model, "url": url},
-            ) from exc
+        if name in _OPTIONAL_MODEL_FILES and isinstance(last_exc, FileNotFoundError):
+            # vocabulary.txt / preprocessor_config.json 并非每个仓库都有
+            log.debug("可选模型文件各源都没有，跳过：%s", name)
+            continue
+        got = done_bytes[0] / 1048576
+        raise DependencyMissingError(
+            f"语音模型 {model} 下载失败（已下 {got:.0f}/{expected_mb:.0f}MB）："
+            f"{str(last_exc)[:110]}。已自动换过 {len(sources)} 个下载源，"
+            "可重试继续下载（支持断点续传），或在设置里换成 tiny 档位（仅 75MB）。",
+            detail={"models_dir": str(target), "model": model, "sources": sources},
+        ) from last_exc
 
     if not (target / "model.bin").is_file():
         raise DependencyMissingError(
