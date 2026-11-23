@@ -2319,9 +2319,13 @@ function renderPicker() {
 }
 
 async function openPicker(bvid) {
-  picker = { bvid, items: [], picked: new Set() };
+  picker = { bvid, items: [], picked: new Set(), sectionId: '', sections: [], mode: '' };
   $('pickTitle').textContent = '正在读取合集…';
   $('pickSub').textContent = '';
+  $('pickViews').hidden = true;
+  $('pickViews').innerHTML = '';
+  $('pickSections').hidden = true;
+  $('pickSections').innerHTML = '';
   $('pickRange').value = '';
   $('pickRedo').checked = false;
   $('pickState').textContent = '';
@@ -2330,21 +2334,123 @@ async function openPicker(bvid) {
   $('pickDlg').showModal();
   try {
     const d = await api(`/api/videos/${encodeURIComponent(bvid)}/series`);
-    picker.items = d.items || [];
-    const kind = d.kind === 'season' ? '合集' : (d.kind === 'pages' ? '多P视频' : '单独视频');
-    $('pickTitle').textContent = `${d.title || '这个视频'} · 共 ${d.total} 集`;
-    $('pickSub').textContent = `识别为${kind}` +
-      (d.done_count ? `；其中 ${d.done_count} 集已经有笔记（灰显，默认不勾）` : '') +
-      '。在下面输入序号可以批量勾选。';
-    if (!picker.items.length) {
-      $('epList').innerHTML = '<p class="empty">没有读到分集，可能这个视频就是单集</p>';
-      $('pickOk').disabled = true;
-      return;
-    }
-    renderPicker();
+    applyPicker(d);
   } catch (e) {
     $('pickTitle').textContent = '读取失败';
     $('epList').innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+  }
+}
+
+/* 把一次 /series 响应套到弹窗上：标题、视图切换、章节标签、分集列表都在这里刷新 */
+function applyPicker(d) {
+  picker.items = d.items || [];
+  picker.sections = d.sections || [];
+  picker.mode = d.kind === 'pages' ? 'pages' : (d.kind === 'season' ? 'season' : '');
+  picker.sectionId = d.section_title ? (currentPickSectionId(d) || '') : '';
+  const kind = d.kind === 'season' ? '合集' : (d.kind === 'pages' ? '多P视频' : '单独视频');
+  $('pickTitle').textContent = `${d.title || '这个视频'} · 共 ${d.total} 集`;
+  // 分章节的合集：默认只展开当前视频所在的那一章，这里把父合集说清楚，
+  // 否则用户会以为自己收藏的「数学类」就是整个「期末冲刺上大分」。
+  let extra = '';
+  if (d.kind === 'pages' && d.season_title) {
+    // 多P视频同时被收进某个合集：默认给学生看这门课自己的分P，合集放在视图切换里
+    extra = `；它同时属于《${d.season_title}》合集，可点上方切换`;
+  } else if (d.section_title && d.season_title && d.season_title !== d.title) {
+    extra = `；来自《${d.season_title}》，只展开「${d.section_title}」这一章（点上面可切换）`;
+  }
+  $('pickSub').textContent = `识别为${kind}` + extra +
+    (d.done_count ? `；其中 ${d.done_count} 集已经有笔记（灰显，默认不勾）` : '') +
+    '。在下面输入序号可以批量勾选。';
+  renderPickViews(d);
+  renderPickSections(d);
+  if (!picker.items.length) {
+    $('epList').innerHTML = '<p class="empty">没有读到分集，可能这个视频就是单集</p>';
+    $('pickOk').disabled = true;
+    return;
+  }
+  renderPicker();
+}
+
+/* 「本视频分P / 所属合集」两个视图：只有两边都存在时才显示切换条 */
+function renderPickViews(d) {
+  const box = $('pickViews');
+  const opts = [];
+  if (d.self_total > 1) {
+    opts.push({ mode: 'pages', label: '本视频分P', count: d.self_total, tip: '只看这个视频自己的分P' });
+  }
+  if (d.season_title && (d.sections || []).length) {
+    const secs = d.sections.length;
+    const total = d.sections.reduce((n, s) => n + Number(s.count || 0), 0);
+    opts.push({
+      mode: 'season',
+      label: secs > 1 ? '所属合集' : '所属合集',
+      count: secs > 1 ? `${secs} 章` : `${total} 集`,
+      tip: `看《${d.season_title}》里的其它内容`,
+    });
+  }
+  if (opts.length < 2) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = opts.map((o) => `
+    <button class="pick-view${picker.mode === o.mode ? ' on' : ''}" data-view="${o.mode}"
+            title="${esc(o.tip)}">${esc(o.label)}<small>${esc(String(o.count))}</small></button>
+  `).join('');
+}
+
+/* 在「本视频分P」和「所属合集」之间切换 */
+async function switchPickView(mode) {
+  if (!picker.bvid || !mode) return;
+  const q = mode === 'season' ? '?mode=season' : '?mode=pages';
+  $('pickState').textContent = '正在切换…';
+  try {
+    const d = await api(`/api/videos/${encodeURIComponent(picker.bvid)}/series${q}`);
+    picker.picked = new Set();
+    applyPicker(d);
+    $('pickState').textContent = '';
+  } catch (e) {
+    $('pickState').textContent = '切换失败：' + e.message;
+  }
+}
+
+/* 当前响应没带章节 id，只能按标题反查（后端 sections 里同一标题不会重复） */
+function currentPickSectionId(d) {
+  const hit = (d.sections || []).find((s) => s.title === d.section_title);
+  return hit ? String(hit.id || '') : '';
+}
+
+/* 多章节合集才有切换条：默认高亮当前章，点别的章重新拉那一章的分集。
+   只在「所属合集」视图下显示；「本视频分P」视图不掺章节。 */
+function renderPickSections(d) {
+  const box = $('pickSections');
+  if (picker.mode !== 'season' || !d.sections || d.sections.length < 2) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const active = currentPickSectionId(d);
+  box.hidden = false;
+  box.innerHTML = d.sections.map((s) => `
+    <button class="pick-sec${String(s.id) === active ? ' on' : ''}"
+            data-sec="${esc(String(s.id))}" title="切到《${esc(s.title)}》">${esc(s.title)}<small>${s.count}</small></button>
+  `).join('');
+}
+
+async function switchPickSection(sectionId) {
+  if (!picker.bvid || !sectionId) return;
+  $('pickSections').querySelectorAll('.pick-sec').forEach((b) => { b.disabled = true; });
+  $('pickState').textContent = '正在切换章节…';
+  try {
+    const d = await api(`/api/videos/${encodeURIComponent(picker.bvid)}/series?mode=season&section=${encodeURIComponent(sectionId)}`);
+    picker.picked = new Set();          // 换章节后原来的勾选不再适用
+    applyPicker(d);
+    $('pickState').textContent = '';
+  } catch (e) {
+    $('pickState').textContent = '切换失败：' + e.message;
+  } finally {
+    $('pickSections').querySelectorAll('.pick-sec').forEach((b) => { b.disabled = false; });
   }
 }
 
@@ -3777,6 +3883,16 @@ function bindEvents() {
   });
   $('btnMakeLecture').onclick = makeLecture;
   // 合集选集：勾选、快捷操作、按序号套用
+  $('pickViews').addEventListener('click', (e) => {
+    const b = e.target.closest('.pick-view');
+    if (!b || b.classList.contains('on')) return;
+    switchPickView(b.dataset.view);
+  });
+  $('pickSections').addEventListener('click', (e) => {
+    const chip = e.target.closest('.pick-sec');
+    if (!chip || chip.classList.contains('on')) return;
+    switchPickSection(chip.dataset.sec);
+  });
   $('epList').addEventListener('change', (e) => {
     const box = e.target.closest('input[data-ep]');
     if (!box) return;

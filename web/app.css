@@ -1332,6 +1332,29 @@ html[data-theme="paper"] .stat .num{font-weight:600}
 .video-card.sel .pick-btn{opacity:1}
 
 .pick-dlg{width:min(560px,94vw)}
+/* 多章节合集的章节切换：默认高亮当前视频所在章，点别的章就地切换列表 */
+.pick-views{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+.pick-view{
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit;
+  padding:6px 12px;border-radius:8px;font-size:12.5px;line-height:1.4;
+  border:1px solid var(--line);background:transparent;color:var(--muted);
+  transition:border-color .2s,background .2s,color .2s;
+}
+.pick-view:hover{border-color:var(--brand);color:var(--brand-d)}
+.pick-view.on{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-d);font-weight:600}
+.pick-view small{color:var(--soft);font-variant-numeric:tabular-nums;font-weight:400}
+.pick-view.on small{color:var(--brand-d)}
+.pick-sections{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 2px}
+.pick-sec{
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit;
+  padding:5px 11px;border-radius:999px;font-size:12.5px;line-height:1.4;
+  border:1px solid var(--line);background:transparent;color:var(--muted);
+  transition:border-color .2s,background .2s,color .2s;
+}
+.pick-sec:hover{border-color:var(--brand);color:var(--brand-d)}
+.pick-sec.on{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-d);font-weight:600}
+.pick-sec small{color:var(--soft);font-variant-numeric:tabular-nums;font-weight:400}
+.pick-sec.on small{color:var(--brand-d)}
 .pick-tools{display:flex;gap:8px;margin:12px 0 8px}
 .pick-tools input{flex:1;min-width:0}
 .pick-quick{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px}

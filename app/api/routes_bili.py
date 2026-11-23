@@ -249,12 +249,18 @@ def fav_import(body: ImportIn, request: Request) -> dict[str, Any]:
 
 
 @router.get("/videos/{bvid}/series")
-def video_series(bvid: str) -> dict[str, Any]:
-    """这个视频是否属于多P或合集，以及它的全部分集。"""
+def video_series(bvid: str, section: str = "", mode: str = "") -> dict[str, Any]:
+    """这个视频是否属于多P或合集，以及它的全部分集。
+
+    section：多章节合集里指定展开哪一章；留空按当前视频所属章节。
+    mode="season"：强制按合集视图展开（多P视频默认展示自己的分P）。
+    """
     if not bvid.startswith("BV"):
         raise HTTPException(400, "不是合法的 BV 号")
     try:
-        found = series_svc.resolve(get_settings(), bvid)
+        found = series_svc.resolve(
+            get_settings(), bvid, section_id=section.strip(), mode=mode.strip().lower()
+        )
     except Exception as exc:
         raise HTTPException(502, f"查询失败：{str(exc)[:120]}") from exc
 

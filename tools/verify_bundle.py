@@ -43,6 +43,8 @@ PROBES = (
     # 半残包（只有 .pyd、没有 __init__.py）一路漏到了线上。
     "yt_dlp", "urllib3,yt_dlp",
     "app.services.downloader", "app.services.pipeline",
+    # 0.2.9 的合集/章节展开逻辑：series 决定队列里排哪些集，导不进来就直接空队列
+    "app.services.series,app.api.routes_bili",
     # 导出链路同样是延迟导入：缺一个就静默失败，用户点导出才发现
     # latex2mathml / mathml2omml 放在 vendor/ 下，只有 import app 之后
     # app/__init__.py 才会把 vendor 加进 sys.path；不带 app 会误报 ImportError。
@@ -100,6 +102,20 @@ def check_files(dist: Path) -> None:
     bad = dist / "_internal" / "backports"
     record(not bad.exists(), "backports 未被打包（0.2.7 崩溃根因）",
            "已排除" if not bad.exists() else "★ 残留会让 yt-dlp 导入崩溃，请检查 build.spec excludes")
+
+    # 前端也要跟着进包：0.2.9 的「本视频分P / 所属合集」切换写在 app.js 里，
+    # 打旧包时 index.html 还引用旧版本号，浏览器缓存会让人以为没修好。
+    js = dist / "_internal" / "web" / "app.js"
+    html = dist / "_internal" / "web" / "index.html"
+    if js.is_file():
+        text = js.read_text(encoding="utf-8", errors="ignore")
+        record("switchPickView" in text, "前端含合集视图切换（app.js）",
+               "switchPickView 已打进包" if "switchPickView" in text else "★ 打进了旧版 app.js")
+    if html.is_file():
+        text = html.read_text(encoding="utf-8", errors="ignore")
+        stale = "app.js?v=20261122b" in text
+        record(not stale, "前端资源版本号已更新",
+               "已不是 20261122b" if not stale else "★ 仍是 20261122b，浏览器会吃旧缓存")
 
 
 def check_vc_runtime(dist: Path) -> None:
