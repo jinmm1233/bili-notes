@@ -2618,12 +2618,15 @@ const MATH_RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
 function isMath(s) {
   const t = String(s ?? '').trim();
   if (!t || t.length > 300) return false;
-  if (/[\u4e00-\u9fff]/.test(t)) return false;          // 夹中文的一般不是公式
-  if (/\\[a-zA-Z]+/.test(t)) return true;               // \frac \begin 等 LaTeX 命令
+  if (/\\[a-zA-Z]+/.test(t)) return true;               // \frac \begin \text 等 LaTeX 命令
+                                                       // 先于中文判断：矩阵箭头上的「初等行变换」、
+                                                       // \text{元} 这类本来就该留在公式里渲染。
+                                                       // 纯文字不含反斜杠，下面的价格保护仍然生效。
+  if (/[\u4e00-\u9fff]/.test(t)) return false;          // 夹中文又没有命令的，按普通文字走（"$50 元"）
   if (/[_^{}]/.test(t)) return true;                    // 上下标 / 分组
   if (/^[A-Za-z]\d?$/.test(t)) return true;             // 单个变量：A、x、n、x1
   if (/^[+-]?\d[\d.,]*$/.test(t)) return true;          // 纯数字（含负数）：$-1$、$2$ 是数学。
-                                                        // 价格误判不在这里挡——"$50 和 $60" 中间夹中文/字母会被上面的规则拦下
+                                                       // 价格误判不在这里挡——"$50 和 $60" 中间夹中文/字母会被上面的规则拦下
   return /[A-Za-z]/.test(t) && /[[\]|+\-*/=<>∧·]/.test(t); // [A|E]、a+b、x≤y
 }
 
