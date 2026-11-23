@@ -24,11 +24,17 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "deepseek": {
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-        "hint": "价格最低，中文长文本表现好；key 申请：platform.deepseek.com",
+        # deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，
+        # 现在只有 deepseek-flash（V4.1 Flash，原生多模态）和 deepseek-v4-pro。
+        "model": "deepseek-flash",
+        # 看图也用同一个模型：deepseek-flash 原生支持图片输入（image_url + base64）。
+        "vision_model": "deepseek-flash",
+        "vision_options": ("deepseek-flash",),
+        # 默认开着思考模式：看图只给 1024 token，不关的话推理会把预算吃光、
+        # 正文直接为空；写摘要也不需要思考，关掉更快更省。
+        "extra_payload": {"thinking": {"type": "disabled"}},
+        "hint": "价格最低，支持看图；key 申请：platform.deepseek.com",
         "needs_key": "1",
-        # DeepSeek 目前没有开放视觉模型，选它当看图模型等于不可用
-        "vision_model": "",
     },
     "zhipu": {
         "label": "智谱 GLM",
@@ -104,6 +110,7 @@ def _estimate_tokens(text: str) -> int:
 
 # 各家模型名的家族特征词，用来判断"设置里手填的模型名"是不是这家的
 _MODEL_FAMILY: dict[str, tuple[str, ...]] = {
+    "deepseek": ("deepseek",),
     "zhipu": ("glm",),
     "qwen": ("qwen", "qvq"),
     "moonshot": ("moonshot", "kimi"),
@@ -238,6 +245,7 @@ class LLMClient:
         temperature: float = 0.3,
         timeout: float = 120.0,
         max_retries: int = 3,
+        extra_payload: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -245,6 +253,9 @@ class LLMClient:
         self.temperature = temperature
         self.timeout = timeout
         self.max_retries = max_retries
+        # 供应商专属的额外请求字段（例如 DeepSeek 的 thinking 开关）。
+        # 只放预设里写死的项，不碰 model / messages 这些核心字段。
+        self.extra_payload = dict(extra_payload or {})
         self.total_tokens = 0
 
     # ---- 构造 ----
@@ -266,6 +277,7 @@ class LLMClient:
             model=model,
             temperature=settings.llm_temperature,
             timeout=settings.llm_timeout,
+            extra_payload=preset.get("extra_payload"),
         )
 
     # ---- 调用 ----
@@ -307,12 +319,14 @@ class LLMClient:
                 base_url=base_url,
                 api_key=key or "ollama",
                 model=model,
+                extra_payload=preset.get("extra_payload"),
             )]
             for b in backups:
                 clients.append(cls(
                     base_url=base_url,
                     api_key=key or "ollama",
                     model=b,
+                    extra_payload=preset.get("extra_payload"),
                 ))
             return FallbackVisionClient(clients, [model, *backups])
 
@@ -322,6 +336,7 @@ class LLMClient:
             model=model,
             temperature=0.2,
             timeout=settings.llm_timeout,
+            extra_payload=preset.get("extra_payload"),
         )
 
     def complete_vision(
@@ -342,6 +357,7 @@ class LLMClient:
                 "image_url": {"url": f"data:{mime};base64,{_b64.b64encode(data).decode('ascii')}"},
             })
         payload: dict[str, Any] = {
+            **self.extra_payload,
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -394,6 +410,7 @@ class LLMClient:
         max_tokens: int = 2048,
     ) -> str:
         payload: dict[str, Any] = {
+            **self.extra_payload,
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},

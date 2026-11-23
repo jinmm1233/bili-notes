@@ -149,9 +149,10 @@ API Key 绝不能随包上传、两个 Key 能不能填同一个会不会冲突�
 - 同一家服务（例：文字和看图都选智谱）→ 共用同一个槽位，一把 Key 两边都能用；
   设置页已实现自动复用（`sameAsText && prov.has_key` → 不重复要求填写）。
 - 不同家服务 → 各存各的，互不覆盖。
-- **唯一的坑**：DeepSeek 没有视觉模型（`PROVIDERS.deepseek.vision_model = ""`），
-  把「看图模型」也选成 DeepSeek 会静默失效（`from_vision_settings` 返回 None），
-  界面不会报错，只是画面要点退回纯文字合成。
+- **旧版本的坑（0.2.10 已修）**：0.2.9 及以前 `PROVIDERS.deepseek.vision_model = ""`，
+  把「看图模型」选成 DeepSeek 会静默失效（`from_vision_settings` 返回 None），界面不报错。
+  2026-08 DeepSeek 开放视觉后，0.2.10 把预设改成 `deepseek-flash`，文字和看图共用同一个模型；
+  同时请求体固定带 `thinking: disabled`（该模型默认开思考，会吃光看图那 1024 token 的预算）。
 - 本次把设置页的 Key 提示改准：同一家时明说「两处共用同一把 Key，不用填两遍」。
 
 **三、真机独立性**

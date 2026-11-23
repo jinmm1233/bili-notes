@@ -3505,6 +3505,7 @@ function renderProviderOptions() {
 
 /* ---- 看图模型：让 AI 真正"看"关键帧来提炼画面要点 ---- */
 const VISION_PROVIDERS = {
+  deepseek: 'DeepSeek（deepseek-flash · 便宜）',
   zhipu: '智谱 GLM（glm-4.6v-flashx · 实测可用）',
   qwen: '通义千问（qwen-vl-plus）',
   moonshot: 'Moonshot（视觉版）',

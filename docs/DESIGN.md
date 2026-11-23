@@ -368,7 +368,7 @@ CREATE TABLE chunks (             -- 分块知识库，支持跨视频检索（�
 
 | 供应商 | Base URL | 默认模型 | 备注 |
 |---|---|---|---|
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | 最便宜，中文强，推荐默认 |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-flash` | 最便宜，原生多模态（文字+看图同一个模型）；`deepseek-chat` 已于 2026-07-24 停用 |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | 有免费额度 |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | 长上下文好 |
 | Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | |

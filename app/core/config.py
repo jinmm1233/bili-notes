@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     # ---- LLM（key 不在此处，存 DPAPI 加密文件）----
     llm_provider: str = "deepseek"
     llm_base_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-flash"
     llm_temperature: float = Field(default=0.3, ge=0, le=2)
     llm_timeout: float = Field(default=120.0, gt=0)
     llm_max_concurrency: int = Field(default=4, ge=1, le=16)
