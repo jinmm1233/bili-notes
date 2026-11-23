@@ -111,11 +111,13 @@ def check_files(dist: Path) -> None:
         text = js.read_text(encoding="utf-8", errors="ignore")
         record("switchPickView" in text, "前端含合集视图切换（app.js）",
                "switchPickView 已打进包" if "switchPickView" in text else "★ 打进了旧版 app.js")
+        record("DeepSeek（deepseek-flash" in text, "前端含 DeepSeek 看图选项（app.js）",
+               "已打进包" if "DeepSeek（deepseek-flash" in text else "★ 打进了旧版 app.js")
     if html.is_file():
         text = html.read_text(encoding="utf-8", errors="ignore")
-        stale = "app.js?v=20261122b" in text
+        stale = "app.js?v=20261122b" in text or "app.js?v=20261123a" in text
         record(not stale, "前端资源版本号已更新",
-               "已不是 20261122b" if not stale else "★ 仍是 20261122b，浏览器会吃旧缓存")
+               "已不是旧版本号" if not stale else "★ 仍是旧版本号，浏览器会吃旧缓存")
 
 
 def check_vc_runtime(dist: Path) -> None:
@@ -217,6 +219,17 @@ def check_service(dist: Path) -> None:
                 versions[key] = f"ERR:{exc}"
         same = len(set(versions.values())) == 1 and all(v[:1].isdigit() for v in versions.values())
         record(same, "版本号三处一致", str(versions))
+
+        # 0.2.10：DeepSeek 的文字/看图预设要真进包（模型名写错会让用户直接 404）
+        try:
+            with LOCAL_OPENER.open(base + "/api/providers", timeout=15) as r:
+                provs = json.loads(r.read().decode("utf-8")).get("providers", [])
+            ds = next((p for p in provs if p.get("id") == "deepseek"), {})
+            record(ds.get("model") == "deepseek-flash" and ds.get("vision_model") == "deepseek-flash",
+                   "DeepSeek 预设已进包（文字+看图）",
+                   f"model={ds.get('model')} vision={ds.get('vision_model')}")
+        except Exception as exc:
+            record(False, "DeepSeek 预设已进包（文字+看图）", str(exc))
 
         # /api/env 会同步跑完自检，两个重型依赖必须都 ok
         try:
