@@ -32,7 +32,9 @@ CARD_FILE = "cards.json"
 MAX_CARDS_PER_NOTE = 60         # 一篇笔记最多留 60 张，避免刷屏
 GEN_LIMIT = 18                  # 单次生成上限
 INTERVAL_CAP = 180.0            # 间隔最长半年
-GRADES = ("again", "hard", "good", "easy")
+# 三档排期 + 一档「丢弃」。丢弃不是评分：前端直接删卡，之后不再出现，
+# 所以不进 schedule()，也不占用 ease/间隔。
+GRADES = ("again", "hard", "good")
 
 # 近似重复：同一道题换个说法，相似度多在 0.87~0.97；
 # 而"第二列下方化零"和"第二列上方化零"这类相邻步骤也会到 0.88，
@@ -455,22 +457,18 @@ def schedule(card: dict[str, Any], grade: str, now: float | None = None) -> dict
         card["lapses"] = int(card.get("lapses") or 0) + 1
     elif grade == "hard":
         ease = max(1.3, ease - 0.15)
-        interval = 1.0 if reps == 0 else max(1.0, round(interval * 1.2))
+        # 1 天 → 1.5 → 2.25 …：增长慢，但每次要看得出来在涨
+        interval = 1.0 if reps == 0 else max(1.0, round(interval * 1.5))
         reps += 1
     elif grade == "good":
+        # 首次 3 天、第二次 7 天。以前首次也是 1 天，和「模糊」显示一模一样，
+        # 按钮上看不出区别，用户会以为排期坏了。
         if reps == 0:
-            interval = 1.0
-        elif reps == 1:
             interval = 3.0
+        elif reps == 1:
+            interval = 7.0
         else:
             interval = max(1.0, round(interval * ease))
-        reps += 1
-    else:  # easy
-        ease = min(2.8, ease + 0.15)
-        if reps == 0:
-            interval = 3.0
-        else:
-            interval = max(1.0, round(interval * ease * 1.3))
         reps += 1
 
     interval = min(INTERVAL_CAP, interval)
@@ -506,6 +504,8 @@ def preview(card: dict[str, Any], now: float | None = None) -> dict[str, str]:
         probe = dict(card)
         schedule(probe, grade, now=now)
         out[grade] = _human_gap(float(probe["interval"]))
+    # 第四档不是排期，是删卡；按钮上照样给一句，别留空
+    out["drop"] = "不再出现"
     return out
 
 

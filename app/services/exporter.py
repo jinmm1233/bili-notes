@@ -17,7 +17,14 @@ from .subtitle import to_srt
 
 log = logging.getLogger(__name__)
 
-_SOURCE_LABEL = {"cc": "CC 字幕（人工）", "ai": "B站 AI 字幕", "asr": "本地语音转写"}
+_SOURCE_LABEL = {"cc": "CC 字幕（人工）", "ai": "B站 AI 字幕", "asr": "本地语音转写", "srt": "本地字幕文件"}
+
+
+def _jump(meta, ts: float, label: str = "跳转到此处") -> str:
+    """时间码跳转链接。本地视频没有来源地址，就不生成 `?t=` 这种空链接。"""
+    if not meta.webpage_url:
+        return ""
+    return f" · [{label}]({ts_link(meta.webpage_url, ts)})"
 
 
 def make_frame_name(frame: Frame, index: int, suffix: str = "jpg") -> str:
@@ -107,11 +114,15 @@ def render_markdown(
 
     lines.append(f"# {meta.title}")
     lines.append("")
-    pub = datetime.fromtimestamp(meta.pubdate).strftime("%Y-%m-%d") if meta.pubdate else "—"
-    lines.append(
-        f"> **UP主** {meta.uploader or '—'} · **时长** {fmt_ts(meta.duration)} · "
-        f"**发布** {pub} · [原视频]({meta.webpage_url})"
-    )
+    if meta.webpage_url:
+        pub = datetime.fromtimestamp(meta.pubdate).strftime("%Y-%m-%d") if meta.pubdate else "—"
+        lines.append(
+            f"> **UP主** {meta.uploader or '—'} · **时长** {fmt_ts(meta.duration)} · "
+            f"**发布** {pub} · [原视频]({meta.webpage_url})"
+        )
+    else:
+        # 本地视频：没有 UP 主、发布日期和原视频链接，硬写「—」和空链接只会让人困惑
+        lines.append(f"> **来源** 本地视频 · **时长** {fmt_ts(meta.duration)}")
     if note.segments:
         lines.append(f"> 字幕来源：{_SOURCE_LABEL.get(note.transcript_source, note.transcript_source)}")
     else:
@@ -330,8 +341,7 @@ def _render_hero(note: VideoNote, image_map: dict[int, str]) -> list[str]:
     return [
         f"![代表画面]({rel})",
         "",
-        f"<sub>▲ {fmt_ts(frame.ts)} · 全片代表画面 · "
-        f"[跳转到此处]({ts_link(note.meta.webpage_url, frame.ts)})</sub>",
+        f"<sub>▲ {fmt_ts(frame.ts)} · 全片代表画面{_jump(note.meta, frame.ts)}</sub>",
         "",
     ]
 
@@ -427,8 +437,7 @@ def _render_shot(
     out = [
         f"![画面 {fmt_ts(frame.ts)}]({rel})",
         "",
-        f"<sub>▲ {fmt_ts(frame.ts)} · "
-        f"[跳转到此处]({ts_link(note.meta.webpage_url, frame.ts)})</sub>",
+        f"<sub>▲ {fmt_ts(frame.ts)}{_jump(note.meta, frame.ts)}</sub>",
         "",
     ]
     if with_caption:
@@ -557,10 +566,7 @@ def _render_problems(note: VideoNote) -> list[str]:
         if prob.ts:
             # 不要用 [..] 把时间码和链接再包一层：Markdown 链接语法会从外层 [ 开始匹配，
             # 文字会变成「01:16 · [跳到讲解」，多出半个方括号。
-            head += (
-                f" <sub>{fmt_ts(prob.ts)} · "
-                f"[跳到讲解]({ts_link(note.meta.webpage_url, prob.ts)})</sub>"
-            )
+            head += f" <sub>{fmt_ts(prob.ts)}{_jump(note.meta, prob.ts, '跳到讲解')}</sub>"
         lines.append(head)
         lines.append("")
 
@@ -602,8 +608,12 @@ def _render_timeline(note: VideoNote) -> list[str]:
     lines.append("")
     for chapter in note.chapters:
         stamp = fmt_ts(chapter.start)
-        link = ts_link(note.meta.webpage_url, chapter.start)
-        lines.append(f"- [`{stamp}`]({link}) {chapter.title}")
+        # 本地视频没有原片可跳，只给时间码，别生成点不开的链接
+        if note.meta.webpage_url:
+            lines.append(
+                f"- [`{stamp}`]({ts_link(note.meta.webpage_url, chapter.start)}) {chapter.title}")
+        else:
+            lines.append(f"- `{stamp}` {chapter.title}")
     lines.append("")
     lines.append("</details>")
     lines.append("")
@@ -653,7 +663,7 @@ def _render_chapter(
                 f"![画面 {stamp}]({rel})"
             )
             lines.append("")
-            lines.append(f"<sub>▲ {stamp} · [跳转到此处]({ts_link(note.meta.webpage_url, frame.ts)})</sub>")
+            lines.append(f"<sub>▲ {stamp}{_jump(note.meta, frame.ts)}</sub>")
             lines.append("")
             # 画面要点是唯一说明：OCR 原文是行列错乱的碎片，直接给读者看
             # 等于没加工（用户反馈"太乱"）；v2 的"画面解读"又只是复述正文。

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import socket
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router
@@ -28,6 +29,8 @@ from .api.routes_offline import router as offline_router
 from .api.routes_quiz import router as quiz_router
 from .api.routes_update import router as update_router
 from .api.routes_wordbook import router as wordbook_router
+from .services import highlights as highlights_svc
+from .services import library as library_svc
 from .core import envcheck
 from .core import lan
 from .core.config import get_settings, save_overrides
@@ -38,6 +41,20 @@ from .services.task_manager import TaskManager
 from . import __version__, window
 
 log = logging.getLogger("main")
+
+
+def _print_payload(settings, note_id: str) -> dict | None:
+    """打印页要的整份数据：正文 + 讲义 + 生词 + 高亮。
+
+    读不到（笔记被删/路径非法）返回 None，让页面走原来的异步路径，
+    由它自己报错——不能因为打印页读失败就影响首页。
+    """
+    try:
+        note = library_svc.get_note(settings, note_id)
+        note["highlights"] = highlights_svc.load(settings, note_id)
+        return note
+    except (FileNotFoundError, ValueError, OSError):
+        return None
 
 
 def create_app() -> FastAPI:
@@ -102,13 +119,29 @@ def create_app() -> FastAPI:
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
         @app.get("/")
-        def index() -> FileResponse:
+        def index(request: Request) -> Response:
             # 首页不能缓存：它带着 app.js / app.css 的版本号，缓存住旧的
             # 就会一直加载旧前端（改了界面却看不到效果，排查起来很费劲）
-            return FileResponse(
-                static_dir / "index.html",
-                headers={"cache-control": "no-cache, no-store, must-revalidate"},
-            )
+            page = static_dir / "index.html"
+            headers = {"cache-control": "no-cache, no-store, must-revalidate"}
+
+            # 打印页（后端导 PDF 用）：把笔记连同高亮内联进 HTML。
+            # 不能让前端再去 fetch —— 浏览器等的“页面加载完成”比 fetch 早，
+            # 短笔记会出现「内容还没画上去就打印」，导出白纸。
+            target = request.query_params.get("print")
+            if target:
+                payload = _print_payload(settings, target)
+                if payload is not None:
+                    blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+                    html = page.read_text(encoding="utf-8").replace(
+                        '<script src="/static/app.js',
+                        f"<script>window.__PRINT_NOTE__={blob};</script>\n"
+                        '<script src="/static/app.js',
+                        1,
+                    )
+                    return HTMLResponse(html, headers=headers)
+
+            return FileResponse(page, headers=headers)
 
     return app
 

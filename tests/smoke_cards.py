@@ -51,14 +51,14 @@ def test_schedule() -> None:
     card = {"ease": 2.5, "interval": 0.0, "reps": 0, "lapses": 0}
 
     C.schedule(card, "good", now=now)
-    ok(abs(card["interval"] - 1) < 1e-6, "新卡点「记得」→ 1 天后")
-    ok(abs(card["due"] - (now + 86400)) < 1, "到期时间 = 现在 + 1 天")
+    ok(abs(card["interval"] - 3) < 1e-6, "新卡点「记得」→ 3 天后")
+    ok(abs(card["due"] - (now + 3 * 86400)) < 1, "到期时间 = 现在 + 3 天")
 
     C.schedule(card, "good", now=now)
-    ok(abs(card["interval"] - 3) < 1e-6, "第二次「记得」→ 3 天")
+    ok(abs(card["interval"] - 7) < 1e-6, "第二次「记得」→ 7 天")
 
     C.schedule(card, "good", now=now)
-    ok(abs(card["interval"] - round(3 * card["ease"])) < 1e-6, "第三次起按 ease 增长")
+    ok(abs(card["interval"] - round(7 * card["ease"])) < 1e-6, "第三次起按 ease 增长")
 
     before_ease = card["ease"]
     C.schedule(card, "again", now=now)
@@ -67,12 +67,10 @@ def test_schedule() -> None:
     ok(card["reps"] == 0, "「忘记」把连击清零")
 
     fresh = {"ease": 2.5, "interval": 0.0, "reps": 0, "lapses": 0}
-    C.schedule(fresh, "easy", now=now)
-    ok(abs(fresh["interval"] - 3) < 1e-6, "新卡点「太简单」→ 3 天后")
-    ok(fresh["ease"] > 2.5, "「太简单」提高 ease")
+    ok("drop" not in C.GRADES, "「丢弃」不是排期档位（走删卡，不参与间隔计算）")
 
     capped = {"ease": 2.8, "interval": 170.0, "reps": 9, "lapses": 0}
-    C.schedule(capped, "easy", now=now)
+    C.schedule(capped, "good", now=now)
     ok(capped["interval"] <= C.INTERVAL_CAP, f"间隔封顶在 {C.INTERVAL_CAP} 天")
 
     floor = {"ease": 1.35, "interval": 10.0, "reps": 3, "lapses": 0}
@@ -85,9 +83,9 @@ def test_preview() -> None:
     card = {"ease": 2.5, "interval": 0.0, "reps": 0, "lapses": 0}
     before = dict(card)
     p = C.preview(card)
-    ok(set(p) == set(C.GRADES), f"四档都有预览（{sorted(p)}）")
+    ok(set(p) == set(C.GRADES) | {"drop"}, f"四档都有预览（{sorted(p)}）")
     ok(p["again"].endswith("分钟后"), f"忘记显示分钟（{p['again']}）")
-    ok(p["easy"] == "3 天后", f"新卡「太简单」显示 3 天（{p['easy']}）")
+    ok(p["drop"] == "不再出现", f"丢弃显示「不再出现」（{p['drop']}）")
     ok(card == before, "预览是纯查询，不修改卡片本身")
 
     # 与真实排期对得上：点"记得"后到期时间 ≈ 预览里的天数

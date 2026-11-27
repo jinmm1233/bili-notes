@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from ..core.config import get_settings
 from ..core.errors import AppError
 from ..core.llm import LLMClient
-from ..services import export_docx, export_pdf, lecture, library
+from ..services import export_docx, export_pdf, highlights, lecture, library
 from ..services.task_manager import Task, TaskManager
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,8 @@ def list_notes(
     """笔记列表。sort 决定“新”指什么：
 
     - `created`（默认）：按笔记生成时间，重排版/补结构不会打乱顺序；
-    - `mtime`：按文件修改时间，刚动过的那篇排最前。
+    - `mtime`：按文件修改时间，刚动过的那篇排最前；
+    - 加 `_asc` 后缀（`created_asc` / `mtime_asc`）为正序：旧的 / 早的排最前。
 
     缓存里存的是默认序，切换口径只是重排，不用重扫磁盘。
     """
@@ -79,6 +80,11 @@ class CollectionIn(BaseModel):
 class MoveIn(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=500)
     to: str = Field(min_length=1, max_length=40)
+
+
+class HighlightsIn(BaseModel):
+    """整份高亮列表。字段宽松收，清洗交给 services.highlights。"""
+    items: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
 
 
 @router.post("/collections")
@@ -150,6 +156,26 @@ def get_note(note_id: str) -> dict[str, Any]:
         raise HTTPException(404, "笔记不存在") from exc
     except ValueError as exc:
         raise HTTPException(403, "非法路径") from exc
+
+
+@router.get("/library/{note_id}/highlights")
+def get_highlights(note_id: str) -> dict[str, Any]:
+    """这篇笔记里用户标过的重点。没有文件就是空列表，不算错。"""
+    try:
+        return {"items": highlights.load(get_settings(), note_id)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "笔记不存在") from exc
+
+
+@router.put("/library/{note_id}/highlights")
+def put_highlights(note_id: str, body: HighlightsIn) -> dict[str, Any]:
+    """整份覆盖保存：前端持有这份列表，增删都回传全量，省掉一堆同步状态。"""
+    try:
+        return {"items": highlights.save(get_settings(), note_id, body.items)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "笔记不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.post("/library/{note_id}/lecture")

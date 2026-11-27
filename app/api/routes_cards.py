@@ -25,7 +25,8 @@ class GenerateIn(BaseModel):
 
 
 class ReviewIn(BaseModel):
-    grade: str = Field(pattern="^(again|hard|good|easy)$")
+    # 第四档「丢弃」走 DELETE /cards/{id}，不是评分
+    grade: str = Field(pattern="^(again|hard|good)$")
 
 
 def _client(request: Request) -> LLMClient:

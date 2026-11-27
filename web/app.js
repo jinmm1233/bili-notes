@@ -120,6 +120,33 @@ function switchView(name) {
 }
 
 /* ==================== 总览 ==================== */
+/* 「快速处理单个视频」的来源：B站链接 / 本地文件（实验）。
+   本地只在这台电脑上处理，任务与 B 站视频进同一个队列。 */
+const QUICK_MODE_KEY = 'bn.quick.mode';
+let quickMode = 'bili';
+try { quickMode = localStorage.getItem(QUICK_MODE_KEY) === 'local' ? 'local' : 'bili'; } catch (e) { /* 隐私模式 */ }
+
+function applyQuickMode() {
+  document.querySelectorAll('#quickMode .seg-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.qmode === quickMode);
+  });
+  const local = quickMode === 'local';
+  $('quickUrl').placeholder = local
+    ? '选择或粘贴视频文件路径'
+    : '粘贴链接，或输入 BV 号（支持 ?p=2）';
+  $('quickPick').hidden = !local;
+  $('quickHint').textContent = local
+    ? '视频不会上传：画面与音轨都在本机处理；旁边有同名 srt/vtt 字幕时会优先用字幕，省掉语音识别。'
+    : '画面文字识别是 BiliNotes 的差异点：PPT、代码、公式都能进笔记';
+}
+
+function setQuickMode(mode) {
+  quickMode = mode === 'local' ? 'local' : 'bili';
+  try { localStorage.setItem(QUICK_MODE_KEY, quickMode); } catch (e) { /* 隐私模式 */ }
+  $('quickUrl').value = '';       // 链接和文件路径不混用，免得粘错框
+  applyQuickMode();
+}
+
 async function loadOverview() {
   const o = await api('/api/overview');
 
@@ -586,13 +613,21 @@ let currentSeriesTitle = '';
 let libCollections = [];
 
 /* 列表排序口径，用户自己选，记在本机：
-   created = 按笔记生成时间（补结构、重建导图不会把顺序打乱）
-   mtime   = 按文件修改时间（"最近动过的"排最前） */
+   created / mtime = 倒序（新的在前），带 _asc = 正序（旧的在前）。
+   老的 localStorage 值 created / mtime 仍然是合法值，不用迁移。 */
 const LIB_SORT_KEY = 'bn.lib.sort';
-let libSort = localStorage.getItem(LIB_SORT_KEY) === 'mtime' ? 'mtime' : 'created';
+const LIB_SORTS = ['created', 'created_asc', 'mtime', 'mtime_asc'];
+const LIB_SORT_LABELS = {
+  created: '按生成时间 · 新在前',
+  created_asc: '按生成时间 · 旧在前',
+  mtime: '按修改时间 · 新在前',
+  mtime_asc: '按修改时间 · 旧在前',
+};
+let libSort = localStorage.getItem(LIB_SORT_KEY) || 'created';
+if (!LIB_SORTS.includes(libSort)) libSort = 'created';
 
 function setLibSort(mode) {
-  libSort = mode === 'mtime' ? 'mtime' : 'created';
+  libSort = LIB_SORTS.includes(mode) ? mode : 'created';
   try { localStorage.setItem(LIB_SORT_KEY, libSort); } catch (e) { /* 隐私模式存不了，不影响本次 */ }
   const sel = $('libSort');
   if (sel) sel.value = libSort;
@@ -656,7 +691,7 @@ async function loadLibrary(query) {
     $('btnLibBack').textContent = currentSeries ? '← 返回收藏夹' : '← 全部收藏夹';
     $('btnSelectMode').hidden = !currentCollection;
     $('btnNewCollection').hidden = !!currentCollection;
-    const sortWord = libSort === 'mtime' ? '按最近修改' : '按生成时间';
+    const sortWord = LIB_SORT_LABELS[libSort] || LIB_SORT_LABELS.created;
 
     if (!query && !currentCollection) {
       // 第一级：收藏夹大类
@@ -908,9 +943,14 @@ let readerTab = 'note';      // note | lecture
 
 async function openNote(id) {
   currentNoteId = id;
+  currentHighlights = [];          // 换笔记先清空，别把上一篇的标记带过来
   try {
-    const d = await api(`/api/library/${encodeURIComponent(id)}`);
+    const [d, hl] = await Promise.all([
+      api(`/api/library/${encodeURIComponent(id)}`),
+      api(`/api/library/${encodeURIComponent(id)}/highlights`).catch(() => ({ items: [] })),
+    ]);
     currentNote = d;
+    currentHighlights = (hl && hl.items) || [];
     readerTab = 'note';
     $('readerTitle').textContent = d.title;
     renderReaderTab();
@@ -951,7 +991,10 @@ function renderReaderTab() {
     $('readerBody').innerHTML = renderMarkdown(
       wantLecture ? currentNote.lecture : currentNote.markdown, currentNoteId);
     // 生词链接只在笔记正文里有意义（讲义的正文走同一套渲染，但没有词表数据）
-    if (!wantLecture) bindWordLinks($('readerBody'));
+    if (!wantLecture) {
+      bindWordLinks($('readerBody'));
+      applyHighlights($('readerBody'));
+    }
   }
   $('reader').scrollTop = 0;
 }
@@ -982,15 +1025,260 @@ async function makeLecture() {
   }
 }
 
+/* ==================== 标重点（高亮） ====================
+   选中文字 → 浮出「标重点」→ 变黄底，存进这篇笔记的 highlights.json。
+   定位不存字符坐标，存「原文 + 前后各 20 字」：重新生成笔记后文字有增删
+   也还能找回来；找不到就跳过——宁可少标一处，也不能标到别的句子上。 */
+let currentHighlights = [];
+let hlPendingRange = null;        // 点工具条时选区会消失，先把它留住
+let hlPopId = '';                 // 当前气泡要取消哪一条
+const HL_CTX = 20;
+const HL_SKIP = 'script,style,noscript,.katex,pre,code,button,.hl-bar,.hl-pop';
+
+/* 把正文里所有文本节点串成一条字符串，同时记住每段在串里的位置。
+   公式（.katex）和代码块跳过：DOM 太碎，也不该被框选标重点。 */
+function hlTextMap(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent || parent.closest(HL_SKIP)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  let text = '';
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push({ node, start: text.length, end: text.length + node.nodeValue.length });
+    text += node.nodeValue;
+    node = walker.nextNode();
+  }
+  return { text, nodes };
+}
+
+/* 选区的 DOM 位置 → 字符串偏移。整段选中时端点常是元素而不是文本节点，
+   这里退到它内部第一个 / 最后一个文本节点，免得"选了一整段却标不了"。 */
+function hlOffset(map, node, offset, isEnd) {
+  for (const seg of map.nodes) {
+    if (seg.node === node) return seg.start + offset;
+  }
+  if (node && node.nodeType === 1) {
+    const inside = map.nodes.filter((seg) => node.contains(seg.node));
+    if (inside.length) return isEnd ? inside[inside.length - 1].end : inside[0].start;
+  }
+  return -1;
+}
+
+/* 在全文里找这条高亮：用前后文打分挑最像的那一处，
+   同一句话在笔记里出现多次也不会标错。找不到返回 -1。 */
+function hlFind(text, hl) {
+  const quote = hl.quote || '';
+  if (!quote) return -1;
+  const pre = hl.prefix || '';
+  const suf = hl.suffix || '';
+  const common = (a, b, fromEnd) => {
+    let n = 0;
+    const max = Math.min(a.length, b.length);
+    while (n < max) {
+      const ca = fromEnd ? a[a.length - 1 - n] : a[n];
+      const cb = fromEnd ? b[b.length - 1 - n] : b[n];
+      if (ca !== cb) break;
+      n += 1;
+    }
+    return n;
+  };
+  let best = -1;
+  let bestScore = -1;
+  let from = 0;
+  while (from <= text.length) {
+    const at = text.indexOf(quote, from);
+    if (at < 0) break;
+    const before = text.slice(Math.max(0, at - pre.length), at);
+    const after = text.slice(at + quote.length, at + quote.length + suf.length);
+    const score = common(before, pre, true) * 2 + common(after, suf, false);
+    if (score > bestScore) { bestScore = score; best = at; }
+    from = at + quote.length;
+  }
+  return best;
+}
+
+/* 把 [start,end) 按文本节点切开，逐段包 <mark>；跨标题 / 列表也能标。 */
+function hlSegments(map, start, end) {
+  const out = [];
+  for (const seg of map.nodes) {
+    if (seg.end <= start) continue;
+    if (seg.start >= end) break;
+    const s = Math.max(start, seg.start) - seg.start;
+    const e = Math.min(end, seg.end) - seg.start;
+    if (e > s) out.push({ node: seg.node, s, e });
+  }
+  return out;
+}
+
+function hlWrapSeg(seg, id) {
+  try {
+    const range = document.createRange();
+    range.setStart(seg.node, seg.s);
+    range.setEnd(seg.node, seg.e);
+    const mark = document.createElement('mark');
+    mark.className = 'hl';
+    mark.dataset.hl = id;
+    range.surroundContents(mark);
+  } catch (e) { /* 极端结构包不进去就跳过，不影响其它段 */ }
+}
+
+function hlUnwrap(root, id) {
+  root.querySelectorAll('mark.hl').forEach((mark) => {
+    if (mark.dataset.hl !== id) return;
+    const parent = mark.parentNode;
+    if (!parent) return;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    parent.removeChild(mark);
+    parent.normalize();
+  });
+}
+
+/* 渲染完笔记后把存过的高亮重新标上（重新生成笔记后也走这里找位置） */
+function applyHighlights(root) {
+  if (!root || !currentHighlights.length) return;
+  for (const hl of currentHighlights) {
+    const map = hlTextMap(root);        // 每标一条重建一次：包 mark 会拆分文本节点
+    const at = hlFind(map.text, hl);
+    if (at < 0) continue;
+    for (const seg of hlSegments(map, at, at + hl.quote.length)) hlWrapSeg(seg, hl.id);
+  }
+}
+
+function hlSaveState() {
+  return api(`/api/library/${encodeURIComponent(currentNoteId)}/highlights`, {
+    method: 'PUT',
+    body: JSON.stringify({ items: currentHighlights }),
+  });
+}
+
+function hlSelectionRange() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  const body = $('readerBody');
+  if (!body || !body.contains(range.commonAncestorContainer)) return null;
+  return range;
+}
+
+function hlHideUI() {
+  $('hlBar').hidden = true;
+  $('hlPop').hidden = true;
+  hlPendingRange = null;
+  hlPopId = '';
+}
+
+/* 把浮层摆在选区上方；上方放不下就翻到下面 */
+function hlPlace(el, rect) {
+  el.hidden = false;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  let left = rect.left + rect.width / 2 - w / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  let top = rect.top - h - 8;
+  if (top < 8) top = rect.bottom + 8;
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+}
+
+function hlAfterSelect() {
+  const bar = $('hlBar');
+  if (!bar) return;
+  if ($('reader').hidden || readerTab !== 'note') { bar.hidden = true; return; }
+  const range = hlSelectionRange();
+  if (!range) { bar.hidden = true; return; }
+  hlPendingRange = range.cloneRange();
+  hlPlace(bar, range.getBoundingClientRect());
+}
+
+async function hlMarkSelection() {
+  if (!currentNoteId || readerTab !== 'note') return;
+  const range = hlSelectionRange() || hlPendingRange;
+  if (!range) return;
+  const body = $('readerBody');
+  const map = hlTextMap(body);
+  let start = hlOffset(map, range.startContainer, range.startOffset, false);
+  let end = hlOffset(map, range.endContainer, range.endOffset, true);
+  if (start < 0 || end < 0 || end <= start) {
+    toast('这段选到了公式或代码，从文字开始选就能标', true);
+    hlHideUI();
+    return;
+  }
+  // 去掉首尾空白，起止跟着挪：存下来的原文带空格，下次就对不上了
+  while (start < end && /\s/.test(map.text[start])) start += 1;
+  while (end > start && /\s/.test(map.text[end - 1])) end -= 1;
+  const quote = map.text.slice(start, end);
+  if (!quote) { hlHideUI(); return; }
+  if (quote.length > 400) { toast('一次最多标 400 字，分几段标吧'); return; }
+
+  // 和已有标记重叠会把 <mark> 套成两层，先劝住
+  for (const hl of currentHighlights) {
+    const at = hlFind(map.text, hl);
+    if (at < 0) continue;
+    if (start < at + hl.quote.length && end > at) {
+      toast('这段和已有标记重叠，先点掉旧的再标');
+      return;
+    }
+  }
+
+  const item = {
+    id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    quote,
+    prefix: map.text.slice(Math.max(0, start - HL_CTX), start),
+    suffix: map.text.slice(end, end + HL_CTX),
+    created: Date.now(),
+  };
+  const prev = currentHighlights.slice();
+  currentHighlights.push(item);
+  try {
+    await hlSaveState();
+  } catch (e) {
+    currentHighlights = prev;
+    toast(e.message, true);
+    hlHideUI();
+    return;
+  }
+  if (window.getSelection()) window.getSelection().removeAllRanges();
+  for (const seg of hlSegments(map, start, end)) hlWrapSeg(seg, item.id);
+  hlHideUI();
+  toast('已标重点');
+}
+
+async function hlRemoveCurrent() {
+  const id = hlPopId;
+  if (!id) return;
+  const prev = currentHighlights.slice();
+  currentHighlights = currentHighlights.filter((hl) => hl.id !== id);
+  try {
+    await hlSaveState();
+  } catch (e) {
+    currentHighlights = prev;
+    toast(e.message, true);
+    return;
+  }
+  hlUnwrap($('readerBody'), id);
+  hlHideUI();
+  toast('已取消标记');
+}
+
 /* ==================== 概念索引 ====================
    一篇笔记只能告诉你"这一集讲了什么"，概念视图回答的是
    "这个概念一共在哪几集讲过、各集是怎么解释的"。 */
 let conceptList = [];
 let conceptKey = '';
 let conceptFilter = 'all';
-let conceptGroupMode = 'topic';
-try { conceptGroupMode = localStorage.getItem('bn.conceptGroup') || 'topic'; } catch (e) { /* 隐私模式 */ }
-let conceptCollapsed = new Set();   // 用户手动收起的组
+// 按学科：数学 / 计算机 / … 各归一堆；按合集：系列 → 视频，视频再多也不会铺一屏
+let conceptGroupMode = 'subject';
+try { conceptGroupMode = localStorage.getItem('bn.conceptGroup') || 'subject'; } catch (e) { /* 隐私模式 */ }
+// 旧版本存的是 topic / note，映射到新语义，别让老用户进来看到空白
+if (conceptGroupMode === 'topic') conceptGroupMode = 'subject';
+if (conceptGroupMode === 'note') conceptGroupMode = 'series';
+let conceptExpanded = new Set();   // 手动展开的组；默认全部收起，一屏只看到大类
 
 let conceptHidden = 0;
 
@@ -1013,6 +1301,15 @@ async function loadConcepts(autoTidy = true) {
       d = await api('/api/concepts');
     } catch (e) { /* 判别失败不影响浏览，继续用已有分类 */ }
   }
+  // 学科还没判过的：补一趟（只写 subject，不动已有类别）。
+  // 没配 Key 时后端退回关键词规则，判不出的归「其他」。
+  if (d.unsubjected > 0) {
+    $('conceptSub').textContent = `正在按学科归类（剩 ${d.unsubjected} 个）…`;
+    try {
+      await api('/api/concepts/subjects', { method: 'POST' });
+      d = await api('/api/concepts');
+    } catch (e) { /* 分类失败不影响浏览，先都归到「其他」 */ }
+  }
   conceptList = d.items || [];
   conceptHidden = d.hidden || 0;
   const totalCards = conceptList.reduce((s, c) => s + (c.cards || 0), 0);
@@ -1029,25 +1326,33 @@ async function loadConcepts(autoTidy = true) {
     : '还没有概念：先生成笔记（笔记里会有「关键概念」表）';
   renderConceptList();
   if (conceptList.length) {
-    // 默认选第一个有笔记的概念；卡片条目排在后面，别一进来就落在那里
-    const first = conceptList.find((c) => c.key === conceptKey)
-      || conceptList.find((c) => c.note_count > 0)
-      || conceptList[0];
-    await selectConcept(first.key);
+    // 不自动展开：一进来就替用户展开某个组，又会变成一屏几十行。
+    // 上次看过的那条还留着就接着展开；没有就保持全折叠，等用户自己点。
+    const keep = conceptList.find((c) => c.key === conceptKey);
+    if (keep) {
+      await selectConcept(keep.key);
+    } else {
+      $('conceptDetail').innerHTML = '<p class="empty">左边展开学科或合集，点一个概念看详情</p>';
+    }
   } else {
     $('conceptDetail').innerHTML = '<p class="empty">还没有可索引的概念</p>';
   }
 }
 
-function conceptItemHtml(c, isChild) {
-  // 子项缩进后位置已经很紧，只显示"有几张卡片"，不重复"1 篇"
-  const meta = isChild
+function conceptItemHtml(c, depth) {
+  // depth：0 = 直接挂在组下，1 = 学科/单集视频下，2 = 合集里的视频下
+  const lvl = depth || 0;
+  // 缩进后位置已经很紧，只显示"有几张卡片"，不重复"1 篇"
+  const meta = lvl > 0
     ? (c.cards ? `${c.cards} 卡` : '')
     : [c.note_count > 0 ? `${c.note_count} 篇` : '', c.cards ? `${c.cards} 卡` : '']
       .filter(Boolean).join(' · ');
   // 重点标记：讲透了的概念前面挂个点，一眼能看出哪些是真正该记的
   const dot = c.core === true ? '<span class="ci-core" title="视频里讲透了的重点概念"></span>' : '';
-  return `<button class="concept-item${isChild ? ' child' : ''}${c.key === conceptKey ? ' active' : ''}" data-key="${esc(c.key)}">
+  // 顶层条目（学科下没有主题组的概念）和组头名字对齐，避免看起来比组头还高一级
+  const cls = 'concept-item' + (lvl ? ' child' : ' root-item') + (lvl > 1 ? ' depth2' : '')
+    + (c.key === conceptKey ? ' active' : '');
+  return `<button class="${cls}" data-key="${esc(c.key)}">
     <span class="ci-name">${dot}${esc(c.name)}</span>
     <span class="ci-meta">${meta}</span>
   </button>`;
@@ -1071,25 +1376,11 @@ function ancestorChain(c, byKey) {
   return chain;
 }
 
-/* 分组：按主题时，一条线上所有下级都收进最顶上那个概念；按视频时按来源笔记分。
+/* 主题分组：一条线上所有下级都收进最顶上那个概念。
    只有一条的组直接平铺——"一个标题配一个孩子"纯属噪声。
    （「整数规划」→「整数规划判定问题」→「可满足到可行解」这样两层的，
     在窄侧栏里再往下缩进就没法读了，所以统一挂在最顶层，按层级排序。） */
-function groupConcepts(items) {
-  if (conceptGroupMode === 'note') {
-    const groups = new Map();
-    for (const c of items) {
-      const name = c.primary_note || '仅来自卡片';
-      const key = `n:${name}`;
-      if (!groups.has(key)) groups.set(key, { key, name, items: [] });
-      groups.get(key).items.push(c);
-    }
-    const list = [...groups.values()];
-    for (const g of list) g.items.sort(byWeight);
-    list.sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
-    return list;
-  }
-
+function groupByTopic(items) {
   const byKey = new Map(items.map((c) => [c.key, c]));
   const groups = new Map();
   const depth = new Map();
@@ -1106,6 +1397,121 @@ function groupConcepts(items) {
   }
   list.sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
   return list;
+}
+
+/* 学科分组：学科 → 主题组。学科顺序固定，「其他」垫底。
+   这样「矩阵连乘」和「秩」不管各自挂在哪条主题线上，至少都在「数学」这一堆里。 */
+const SUBJECT_ORDER = ['数学', '计算机', '英语', '物理', '心理学', '经济', '其他'];
+function groupBySubject(items) {
+  const buckets = new Map();
+  for (const c of items) {
+    const name = c.subject || '其他';
+    if (!buckets.has(name)) buckets.set(name, []);
+    buckets.get(name).push(c);
+  }
+  const list = [...buckets.entries()].map(([name, arr]) => ({
+    key: `s:${name}`, name, items: arr,
+    // 组头按名字排，位置稳定：这次在「矩阵」附近，下次还在，不会因为概念变多就漂走
+    topics: groupByTopic(arr).sort((a, b) => a.name.localeCompare(b.name, 'zh')),
+  }));
+  list.sort((a, b) => {
+    const ia = SUBJECT_ORDER.indexOf(a.name);
+    const ib = SUBJECT_ORDER.indexOf(b.name);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || b.items.length - a.items.length;
+  });
+  return list;
+}
+
+/* 合集内的视频名去掉与合集重复的前缀：七集 CSAPP 都以「CMU 15-213 CSAPP 深入理解计算机系统」
+   开头，原样显示会被截成同一行字，根本分不清 p12 / p13。 */
+function shortVideoName(title, series) {
+  const t = String(title || '');
+  const s = String(series || '');
+  if (s && t.startsWith(s)) {
+    const rest = t.slice(s.length).replace(/^[\s\-—_:：|·]+/, '').trim();
+    if (rest) return rest;
+  }
+  return t;
+}
+
+/* 合集分组：系列 → 视频 → 概念。
+   没有系列的散视频统一收进「单独视频」，默认收起——
+   否则十几条单集铺在列表里，又回到"视频多了要滑很久"的老问题。 */
+function groupBySeries(items) {
+  const map = new Map();
+  const singles = {
+    key: 'r:__singles__', name: '单独视频', hasSeries: false,
+    isSingles: true, videos: new Map(), count: 0,
+  };
+  for (const c of items) {
+    const seriesName = c.primary_series || '';
+    const seriesKey = c.primary_series_key || '';
+    const videoName = c.primary_note || '仅来自卡片';
+    let g = singles;
+    if (seriesKey && seriesName) {
+      const gkey = `r:${seriesKey}`;
+      if (!map.has(gkey)) {
+        map.set(gkey, { key: gkey, name: seriesName, hasSeries: true, videos: new Map(), count: 0 });
+      }
+      g = map.get(gkey);
+    }
+    const vkey = `v:${videoName}`;
+    if (!g.videos.has(vkey)) {
+      g.videos.set(vkey, {
+        key: vkey,
+        name: g.hasSeries ? shortVideoName(videoName, seriesName) : videoName,
+        fullName: videoName,
+        order: c.primary_series_order || 0,
+        items: [],
+      });
+    }
+    g.videos.get(vkey).items.push(c);
+    g.count += 1;
+  }
+  const list = [...map.values()];
+  for (const g of list) {
+    g.videoList = [...g.videos.values()];
+    for (const v of g.videoList) v.items.sort(byWeight);
+    // 合集内按集数顺序排（p12 → p13 → …），而不是按概念多少
+    g.videoList.sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+  }
+  list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  if (singles.videos.size) {
+    singles.videoList = [...singles.videos.values()];
+    for (const v of singles.videoList) v.items.sort(byWeight);
+    singles.videoList.sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
+    list.push(singles);
+  }
+  return list;
+}
+
+/* 组头。默认收起，只展开点过的、或当前选中概念所在的那条路径。 */
+function groupHeadHtml(key, name, lvl, meta, opts) {
+  const open = conceptExpanded.has(key);
+  const o = opts || {};
+  const nameCls = 'cg-name' + (lvl > 1 ? ' sub' : '');
+  const tip = o.title ? ` title="${esc(o.title)}"` : '';
+  const nameHtml = o.clickable
+    ? `<button class="${nameCls}" data-key="${esc(key)}"${tip}>${esc(name)}</button>`
+    : `<span class="${nameCls}"${tip}>${esc(name)}</span>`;
+  return `<div class="cg-head cg-l${lvl}${o.active ? ' active' : ''}">
+    <button class="cg-caret" data-toggle="${esc(key)}" title="展开 / 收起">${open ? '▾' : '▸'}</button>
+    ${nameHtml}
+    <em>${meta}</em>
+  </div>`;
+}
+
+/* 选中一个概念时，把它所在的两层组都展开（学科 → 主题 / 合集 → 视频）。 */
+function expandPathFor(item) {
+  if (!item) return;
+  if (conceptGroupMode === 'series') {
+    const skey = item.primary_series_key ? `r:${item.primary_series_key}` : 'r:__singles__';
+    conceptExpanded.add(skey);
+    conceptExpanded.add(`v:${item.primary_note || '仅来自卡片'}`);
+  } else {
+    conceptExpanded.add(`s:${item.subject || '其他'}`);
+    conceptExpanded.add(rootKeyOf(item));
+  }
 }
 
 function renderConceptList() {
@@ -1133,34 +1539,71 @@ function renderConceptList() {
   // 搜索时平铺，分组反而碍事
   if (needle) {
     $('conceptList').innerHTML = [...items].sort(byWeight)
-      .map((c) => conceptItemHtml(c, false)).join('');
+      .map((c) => conceptItemHtml(c, 0)).join('');
     return;
   }
 
-  const groups = groupConcepts(items);
-  $('conceptList').innerHTML = groups.map((g) => {
-    const parent = g.items.find((c) => c.key === g.key);   // 主题模式下组长本身就是概念
-    const children = g.items.filter((c) => c.key !== g.key);
-    if (!children.length) return conceptItemHtml(g.items[0], false);
+  const hasActive = (arr) => (arr || []).some((c) => c.key === conceptKey);
+  const box = [];
 
-    const open = !conceptCollapsed.has(g.key);
-    let gmeta = parent
-      ? [parent.cards ? `${parent.cards} 卡` : '', parent.note_count > 1 ? `${parent.note_count} 篇` : '']
-        .filter(Boolean).join(' · ')
-      : '';
-    if (!gmeta) gmeta = `${children.length} 项`;   // 方法本身没有卡片时，退而显示挂了几条
-    // 点箭头只收起；点名字看组长详情——组头不再重复列出自己
-    return `<div class="cg">
-      <div class="cg-head${parent && parent.key === conceptKey ? ' active' : ''}">
-        <button class="cg-caret" data-toggle="${esc(g.key)}" title="展开 / 收起">${open ? '▾' : '▸'}</button>
-        <button class="cg-name${parent ? '' : ' plain'}"${parent ? ` data-key="${esc(g.key)}"` : ''}>${esc(g.name)}</button>
-        <em>${gmeta}</em>
-      </div>
-      <div class="cg-items"${open ? '' : ' hidden'}>
-        ${children.map((c) => conceptItemHtml(c, true)).join('')}
-      </div>
-    </div>`;
-  }).join('');
+  if (conceptGroupMode === 'series') {
+    // 合集 → 视频 → 概念。合集和「单独视频」都默认收起，一屏只看到几个大类。
+    for (const g of groupBySeries(items)) {
+      const open = conceptExpanded.has(g.key);
+      const meta = `${g.videoList.length} 个视频 · ${g.count} 个概念`;
+      const active = g.videoList.some((v) => hasActive(v.items));
+      box.push(`<div class="cg">
+        ${groupHeadHtml(g.key, g.name, 1, meta, { active })}
+        <div class="cg-items"${open ? '' : ' hidden'}>`);
+      for (const v of g.videoList) {
+        const vopen = conceptExpanded.has(v.key);
+        // 单集视频里的概念少一层缩进（视频下直接就是概念）
+        const depth = g.hasSeries ? 2 : 1;
+        box.push(`<div class="cg cg-sub">
+          ${groupHeadHtml(v.key, v.name, 2, `${v.items.length} 个概念`, { active: hasActive(v.items), title: v.fullName })}
+          <div class="cg-items"${vopen ? '' : ' hidden'}>
+            ${v.items.map((c) => conceptItemHtml(c, depth)).join('')}
+          </div>
+        </div>`);
+      }
+      box.push('</div></div>');
+    }
+  } else {
+    // 学科 → 主题组 → 概念。找「数学类」时位置永远固定，不用来回翻。
+    for (const s of groupBySubject(items)) {
+      const open = conceptExpanded.has(s.key);
+      box.push(`<div class="cg">
+        ${groupHeadHtml(s.key, s.name, 1, `${s.items.length} 个概念`, { active: hasActive(s.items) })}
+        <div class="cg-items"${open ? '' : ' hidden'}>`);
+      for (const t of s.topics) {
+        const parent = t.items.find((c) => c.key === t.key);   // 组长本身就是概念
+        const children = t.items.filter((c) => c.key !== t.key);
+        // 组里只有一两条：不值得单开组头。父概念平铺（不缩进），
+        // 子概念大幅缩进——否则平铺项紧跟组头，会被误读成组头的孩子。
+        if (children.length < 2) {
+          for (const c of t.items) {
+            box.push(conceptItemHtml(c, c.key === t.key ? 0 : 2));
+          }
+          continue;
+        }
+        const topen = conceptExpanded.has(t.key);
+        let gmeta = parent
+          ? [parent.cards ? `${parent.cards} 卡` : '',
+             parent.note_count > 1 ? `${parent.note_count} 篇` : ''].filter(Boolean).join(' · ')
+          : '';
+        if (!gmeta) gmeta = `${children.length} 项`;   // 方法本身没有卡片时，退而显示挂了几条
+        // 点箭头只收起；点名字看组长详情——组头不再重复列出自己
+        box.push(`<div class="cg cg-sub">
+          ${groupHeadHtml(t.key, t.name, 2, gmeta, { clickable: true, active: hasActive(t.items) })}
+          <div class="cg-items"${topen ? '' : ' hidden'}>
+            ${children.map((c) => conceptItemHtml(c, 2)).join('')}
+          </div>
+        </div>`);
+      }
+      box.push('</div></div>');
+    }
+  }
+  $('conceptList').innerHTML = box.join('');
 }
 
 /* 卡片列表里的紧凑预览：矩阵这类多行公式在窄行里会被裁断，统一压成「公式」占位。
@@ -1211,7 +1654,7 @@ async function tidyConcepts() {
       parts.push(ai.checked ? `AI 复核了 ${ai.checked} 条，没发现该合并的` : 'AI 复核：没有可疑条目');
     }
     toast(parts.length ? parts.join('，') : '已经很整齐了');
-    conceptCollapsed = new Set();
+    conceptExpanded = new Set();
     await loadConcepts(false);
     if (conceptKey) await selectConcept(conceptKey);
   } catch (e) {
@@ -1248,13 +1691,9 @@ async function explainConcepts() {
 function switchGroupMode(mode) {
   conceptGroupMode = mode;
   try { localStorage.setItem('bn.conceptGroup', mode); } catch (e) { /* 隐私模式 */ }
-  conceptCollapsed = new Set();
-  if (mode === 'note') {
-    // 按视频分组默认收起，否则一屏几十条
-    for (const c of conceptList) conceptCollapsed.add(`n:${c.primary_note || '仅来自卡片'}`);
-    const active = conceptList.find((c) => c.key === conceptKey);
-    if (active) conceptCollapsed.delete(`n:${active.primary_note || '仅来自卡片'}`);
-  }
+  // 两种模式都默认收起，只把当前选中的概念展开到可见
+  conceptExpanded = new Set();
+  expandPathFor(conceptList.find((c) => c.key === conceptKey));
   renderConceptList();
 }
 
@@ -1268,13 +1707,7 @@ function rootKeyOf(item) {
 
 async function selectConcept(key) {
   conceptKey = key;
-  const item = conceptList.find((c) => c.key === key);
-  if (item) {
-    if (conceptGroupMode === 'topic') conceptCollapsed.delete(rootKeyOf(item));
-    if (conceptGroupMode === 'note') {
-      conceptCollapsed.delete(`n:${item.primary_note || '仅来自卡片'}`);
-    }
-  }
+  expandPathFor(conceptList.find((c) => c.key === key));
   renderConceptList();
   const box = $('conceptDetail');
   box.innerHTML = '<p class="empty">加载中…</p>';
@@ -2108,16 +2541,62 @@ function flipCard() {
   $('flashcard').classList.add('flipped');
 }
 
+/* 丢弃是不可逆的删除（删了不进回收站），先弹框确认；返回 true 才真的删 */
+function askDrop(card) {
+  const dlg = $('dropDlg');
+  if (!dlg) return Promise.resolve(true);
+  const frontEl = $('dropDlgFront');
+  // 只做纯文本预览：去掉公式定界符和 Markdown 记号，别让 `$x$`、`**` 原样露出来
+  const front = (card.front || '')
+    .replace(/\$\$([\s\S]*?)\$\$/g, '$1')
+    .replace(/\$([^$\n]+)\$/g, '$1')
+    .replace(/[*`#]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (frontEl) {
+    frontEl.textContent = front ? `「${front}」` : '';
+    frontEl.hidden = !front;
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      dlg.removeEventListener('close', onClose);
+      $('dropDlgOk').onclick = null;
+      $('dropDlgCancel').onclick = null;
+      resolve(ok);
+    };
+    // Esc 关掉、点「留着」都按取消处理
+    const onClose = () => finish(false);
+    $('dropDlgOk').onclick = () => { dlg.close(); finish(true); };
+    $('dropDlgCancel').onclick = () => { dlg.close(); finish(false); };
+    dlg.addEventListener('close', onClose);
+    try {
+      dlg.showModal();
+    } catch (e) {
+      finish(false);   // 已有别的弹窗开着：这次不删，别在没确认的情况下丢卡
+    }
+  });
+}
+
 async function gradeCard(grade) {
   const card = reviewQueue[reviewIdx];
   if (!card || !revealed) return;
+  if (grade === 'drop' && !(await askDrop(card))) return;
   const btns = document.querySelectorAll('.review-actions .btn');
   btns.forEach((b) => { b.disabled = true; });
   try {
-    await api(`/api/cards/${encodeURIComponent(card.id)}/review`, {
-      method: 'POST',
-      body: JSON.stringify({ grade }),
-    });
+    if (grade === 'drop') {
+      // 丢弃 = 从卡片库删掉，不是评分；之后拉队列不会再出现
+      await api(`/api/cards/${encodeURIComponent(card.id)}`, { method: 'DELETE' });
+      toast('已丢弃，这张卡以后不会再出现');
+    } else {
+      await api(`/api/cards/${encodeURIComponent(card.id)}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ grade }),
+      });
+    }
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -3280,29 +3759,50 @@ async function installUpdate() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* ---------- 更新轻提示：发现新版右下角冒一条，不打断操作 ----------
-   同一个版本只提示一次：用户点「去看看」或关掉都记下来，下次启动不再弹；
-   等真出了新版本（版本号变了）才会再提示。隐私模式存不了就本次记住。 */
+/* ---------- 更新提醒：发现新版居中弹一次 ----------
+   同一个版本只弹一次：点「去更新」或「这个版本不再提醒」都记下来，下次启动不再弹；
+   「以后再说」只关本次，下次启动如果还是旧版会再提。
+   等真出了新版本（版本号变了）才会重新提示。隐私模式存不了就本次记住。 */
 const UPD_SEEN_KEY = 'bn.updateNotified';
+let updPromptTries = 0;          // 别的弹框占着时，延后重试的次数
 function updateSeenVersion() {
   try { return localStorage.getItem(UPD_SEEN_KEY) || ''; } catch (_) { return ''; }
 }
 function markUpdateSeen(ver) {
   try { localStorage.setItem(UPD_SEEN_KEY, ver || ''); } catch (_) { /* 隐私模式忽略 */ }
 }
-function showUpdateToast(d) {
-  const box = $('updToast');
-  if (!box || !d || !d.has_update || !d.latest) return;
-  if (updateSeenVersion() === d.latest) return;       // 这个版本提示过了
-  box.dataset.ver = d.latest;
-  $('updToastText').innerHTML = `发现新版本 <b>v${esc(d.latest)}</b>，去设置页下载更新`;
-  box.hidden = false;
+
+function showUpdatePrompt(d) {
+  const dlg = $('updDlg');
+  if (!dlg || !d || !d.has_update || !d.latest) return;
+  if (updateSeenVersion() === d.latest) return;       // 这个版本提醒过了
+  if (dlg.open) return;
+  // 已经有别的弹框开着：硬 showModal 会抛错，等几秒再试（最多 3 次）
+  if (document.querySelector('dialog[open]')) {
+    if (updPromptTries >= 3) return;
+    updPromptTries += 1;
+    setTimeout(() => showUpdatePrompt(d), 3000);
+    return;
+  }
+  dlg.dataset.ver = d.latest;
+  $('updDlgVer').textContent = `v${d.latest}`;
+  $('updDlgText').textContent = d.version
+    ? `你现在是 v${d.version}，可以去设置页下载安装新版。`
+    : '可以去设置页下载安装新版。';
+  updPromptTries = 0;
+  dlg.showModal();
 }
-function hideUpdateToast(remember) {
-  const box = $('updToast');
-  if (!box) return;
-  if (remember && box.dataset.ver) markUpdateSeen(box.dataset.ver);
-  box.hidden = true;
+
+/* 点「去更新」：记下这个版本，别再弹，然后跳到设置页的更新面板 */
+function goUpdate() {
+  const dlg = $('updDlg');
+  if (dlg.dataset.ver) markUpdateSeen(dlg.dataset.ver);
+  dlg.close();
+  switchView('settings');
+  setTimeout(() => {
+    const panel = $('btnUpdCheck') && $('btnUpdCheck').closest('.panel');
+    if (panel) panel.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 400);
 }
 /* 启动时的 /auto 只负责触发后台线程，结果要等它写完状态文件才读得到。
    started=true 就多轮询几次，started=false（limit/未配置）只查一次缓存。 */
@@ -3312,7 +3812,7 @@ function watchUpdateHint(waitForCheck) {
   const tick = async () => {
     try {
       const d = await api('/api/update/status');
-      if (d.has_update) { showUpdateToast(d); return; }
+      if (d.has_update) { showUpdatePrompt(d); return; }
     } catch (_) { /* 拿不到状态就算了，绝不打扰 */ }
     if (++tries < max) setTimeout(tick, 1500);
   };
@@ -3837,34 +4337,68 @@ function bindEvents() {
   $('btnUpdRelease').onclick = () => {
     if (updReleaseUrl) window.open(updReleaseUrl, '_blank', 'noopener');
   };
-  $('updToastGo').onclick = () => { hideUpdateToast(true); switchView('settings'); };
-  $('updToastX').onclick = () => hideUpdateToast(true);
+  $('updDlgGo').onclick = () => goUpdate();
+  $('updDlgLater').onclick = () => $('updDlg').close();     // 只关本次，下次启动还会提
+  $('updDlgNever').onclick = () => {
+    const d = $('updDlg');
+    if (d.dataset.ver) markUpdateSeen(d.dataset.ver);
+    d.close();
+  };
   $('updRepo').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') $('btnUpdSave').click();
   });
 
   $('btnRefreshDash').onclick = () => loadOverview().catch((e) => toast(e.message, true));
-  $('quickStart').onclick = async () => {
-    const url = $('quickUrl').value.trim();
-    if (!url) { toast('请先粘贴链接', true); return; }
+  $('quickMode').addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-item');
+    if (!btn || btn.dataset.qmode === quickMode) return;
+    setQuickMode(btn.dataset.qmode);
+  });
+  $('quickPick').onclick = async () => {
+    const btn = $('quickPick');
+    btn.disabled = true;
     try {
-      await api('/api/tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          url,
-          frames: $('qFrames').checked,
-          ocr: $('qOcr').checked,
-          summary: $('qSummary').checked,
-          lecture: $('qLecture').checked,
-        }),
-      });
+      const d = await api('/api/system/pick-video', { method: 'POST' });
+      if (d && d.ok && d.path) $('quickUrl').value = d.path;
+      else if (d && d.message) toast(d.message, true);   // 弹不出框就让用户手填
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  $('quickStart').onclick = async () => {
+    const value = $('quickUrl').value.trim();
+    if (!value) {
+      toast(quickMode === 'local' ? '请先选择或粘贴视频文件路径' : '请先粘贴链接', true);
+      return;
+    }
+    const common = {
+      frames: $('qFrames').checked,
+      ocr: $('qOcr').checked,
+      summary: $('qSummary').checked,
+      lecture: $('qLecture').checked,
+    };
+    try {
+      if (quickMode === 'local') {
+        await api('/api/tasks/local', {
+          method: 'POST',
+          body: JSON.stringify({ path: value, ...common }),
+        });
+      } else {
+        await api('/api/tasks', {
+          method: 'POST',
+          body: JSON.stringify({ url: value, ...common }),
+        });
+      }
       $('quickUrl').value = '';
-      toast('已加入队列');
+      toast(quickMode === 'local' ? '已加入队列（本地视频无需下载）' : '已加入队列');
       switchView('queue');
     } catch (e) {
       toast(e.message, true);
     }
   };
+  applyQuickMode();
   $('quickUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('quickStart').click(); });
 
   $('btnQr').onclick = startQr;
@@ -3919,6 +4453,34 @@ function bindEvents() {
   $('btnMoveNew').onclick = () => newCollectionInMove().catch((e) => toast(e.message, true));
 
   $('readerBack').onclick = () => { $('reader').hidden = true; };
+
+  // 标重点：鼠标 / 手指选完字浮出工具条；点空白、滚动、Esc 都收起
+  document.addEventListener('mouseup', () => setTimeout(hlAfterSelect, 0));
+  document.addEventListener('touchend', () => setTimeout(hlAfterSelect, 120));
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'Escape') { hlHideUI(); return; }
+    hlAfterSelect();          // 用 Shift+方向键选字时也要能标
+  });
+  document.addEventListener('mousedown', (e) => {
+    const t = e.target;
+    if (t && t.closest && t.closest('.hl-bar, .hl-pop, mark.hl')) return;
+    hlHideUI();
+  });
+  $('reader').addEventListener('scroll', hlHideUI, { passive: true });
+  // 按住工具条别让按钮抢焦点，否则选区当场消失、什么都标不上
+  $('hlBar').addEventListener('mousedown', (e) => e.preventDefault());
+  $('hlMark').onclick = () => hlMarkSelection();
+  $('hlRemove').onclick = () => hlRemoveCurrent();
+  // 点已有高亮：弹「取消标记」。捕获阶段拦住，别让里面的生词链接跟着跳走。
+  // 笔记正文里模型写的 ==高亮== 也渲染成 mark.hl，但没有 data-hl，那种不接管。
+  $('readerBody').addEventListener('click', (e) => {
+    const mark = e.target.closest && e.target.closest('mark.hl');
+    if (!mark || !mark.dataset.hl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    hlPopId = mark.dataset.hl;
+    hlPlace($('hlPop'), mark.getBoundingClientRect());
+  }, true);
   $('readerTabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.reader-tab');
     if (!tab || tab.dataset.tab === readerTab) return;
@@ -4011,8 +4573,8 @@ function bindEvents() {
     const head = e.target.closest('[data-toggle]');
     if (head) {
       const key = head.dataset.toggle;
-      if (conceptCollapsed.has(key)) conceptCollapsed.delete(key);
-      else conceptCollapsed.add(key);
+      if (conceptExpanded.has(key)) conceptExpanded.delete(key);
+      else conceptExpanded.add(key);
       renderConceptList();
       return;
     }
@@ -4158,9 +4720,14 @@ async function cleanExampleCards() {
   document.addEventListener('keydown', (e) => {
     if (currentView !== 'review') return;
     if (e.target.closest && e.target.closest('input, textarea, select')) return;
+    // 有弹框开着（丢弃确认、排期说明）就只让弹框自己处理按键，别再给背后的卡评分
+    if (document.querySelector('dialog[open]')) return;
     if (e.code === 'Space') { e.preventDefault(); flipCard(); return; }
-    const map = { 1: 'again', 2: 'hard', 3: 'good', 4: 'easy' };
-    if (map[e.key] && revealed) gradeCard(map[e.key]);
+    // A / S / D / F 对应四档，和按钮右下角的角标一致；大小写都认
+    if (e.ctrlKey || e.metaKey || e.altKey) return;   // 别抢 Ctrl+A 这类系统组合键
+    const map = { a: 'again', s: 'hard', d: 'good', f: 'drop' };
+    const k = String(e.key || '').toLowerCase();
+    if (map[k] && revealed) gradeCard(map[k]);
   });
 
   $('btnExport').onclick = () => { setExportState(''); $('exportDlg').showModal(); };
@@ -4287,22 +4854,30 @@ async function init() {
     const li = label.closest('li');
     if (li && li.classList.contains('has-kids')) li.classList.toggle('mm-closed');
   });
-  const initial = location.hash.slice(1);
-  const start = VIEW_LOADERS[initial] ? initial : 'dashboard';
-  try {
-    await VIEW_LOADERS[start]();
-    if (start !== 'dashboard') switchView(start);
-  } catch (e) {
-    toast('初始化失败：' + e.message, true);
-  }
 
-  // 打印专用入口：/?print=<笔记id>&t=1|0 —— 后端导出 PDF 时用浏览器打开的就是这个地址
-  const printTarget = new URLSearchParams(location.search).get('print');
+  // 打印入口优先处理：不能先加载总览 / 起轮询，否则无头浏览器可能赶在
+  // 正文画上去之前就打印，导出一张白纸。处理完直接 return。
+  const params = new URLSearchParams(location.search);
+
+  // 笔记打印：/?print=<笔记id>&t=1|0
+  const printTarget = params.get('print');
   if (printTarget) {
     document.body.classList.add('print-mode');
     try {
-      await openNote(printTarget);
-      if (new URLSearchParams(location.search).get('t') !== '1') {
+      const embedded = window.__PRINT_NOTE__;
+      if (embedded && embedded.id === printTarget) {
+        // 后端把正文内联进页面了：同步渲染，浏览器开始打印时内容已经在页面上
+        currentNoteId = printTarget;
+        currentNote = embedded;
+        currentHighlights = embedded.highlights || [];
+        readerTab = 'note';
+        $('readerTitle').textContent = embedded.title || printTarget;
+        renderReaderTab();
+        $('reader').hidden = false;
+      } else {
+        await openNote(printTarget);
+      }
+      if (params.get('t') !== '1') {
         document.querySelectorAll('#readerBody details.fold').forEach((el) => el.remove());
       }
       await waitAssets();
@@ -4310,10 +4885,11 @@ async function init() {
     } catch (e) {
       document.documentElement.setAttribute('data-print-ready', 'error');
     }
+    return;
   }
 
-  // 卷面入口：/?printquiz=<id> —— 后端导出 PDF 时打开的就是这个地址
-  const printQuiz = new URLSearchParams(location.search).get('printquiz');
+  // 卷面打印：/?printquiz=<id>
+  const printQuiz = params.get('printquiz');
   if (printQuiz) {
     try {
       await renderQuizSheet(printQuiz);
@@ -4322,6 +4898,16 @@ async function init() {
     } catch (e) {
       document.documentElement.setAttribute('data-print-ready', 'error');
     }
+    return;
+  }
+
+  const initial = location.hash.slice(1);
+  const start = VIEW_LOADERS[initial] ? initial : 'dashboard';
+  try {
+    await VIEW_LOADERS[start]();
+    if (start !== 'dashboard') switchView(start);
+  } catch (e) {
+    toast('初始化失败：' + e.message, true);
   }
 
   api('/api/auth/status').then((s) => {

@@ -148,6 +148,10 @@ def build(settings: Settings) -> list[dict[str, Any]]:
                     "title": note.get("title") or note_id,
                     "uploader": note.get("uploader") or "",
                     "collection": note.get("collection") or "",
+                    # 系列（合集）信息：概念页「按合集」时用它做第一层
+                    "series_key": note.get("series_key") or "",
+                    "series_title": note.get("series_title") or "",
+                    "series_order": note.get("series_order") or 0,
                     "explanation": desc,
                     "mtime": note.get("mtime") or 0,
                 }
@@ -213,6 +217,8 @@ def summary(settings: Settings) -> dict[str, Any]:
     out: list[dict[str, Any]] = []
     for i in items:
         row = cache.get(i["key"]) or {}
+        # 主来源：notes 按生成时间倒序，取最新那篇。按视频 / 按合集分组都以它为锚。
+        first = i["notes"][0] if i["notes"] else {}
         out.append({
             "key": i["key"],
             "name": i["name"],
@@ -221,7 +227,11 @@ def summary(settings: Settings) -> dict[str, Any]:
             "aliases": i.get("aliases") or [],
             "tag_name": i.get("tag_name") or i["name"],
             # 按视频分组用：这个概念主要来自哪篇笔记
-            "primary_note": (i["notes"][0]["title"] if i["notes"] else ""),
+            "primary_note": first.get("title") or "",
+            # 按合集分组用：主来源视频属于哪个系列；单集视频为空
+            "primary_series": first.get("series_title") or "",
+            "primary_series_key": first.get("series_key") or "",
+            "primary_series_order": first.get("series_order") or 0,
             # core：模型判定这个概念在视频里是不是被讲透的重点概念
             # None = 还没判过
             "core": (bool(row.get("core")) if row.get("explain") else None),

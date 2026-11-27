@@ -50,3 +50,7 @@ tests/_demo_caption/
 
 # macOS 构建产物（dmg / artifact 下载）
 mac-dist/
+
+# 打包与验收的过程日志（体积大、可重新生成，别进仓库）
+build-*.log
+verify-*.log

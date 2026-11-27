@@ -75,7 +75,10 @@ def created_ts(raw: str, fallback: float) -> float:
 # 所以做成可选项，由前端记住选择。
 SORT_CREATED = "created"
 SORT_MTIME = "mtime"
-SORTS = (SORT_CREATED, SORT_MTIME)
+# 加 _asc 就是正序（旧→早、早→新）；不带后缀仍是原来的倒序，老链接和旧缓存值照常工作
+SORT_CREATED_ASC = "created_asc"
+SORT_MTIME_ASC = "mtime_asc"
+SORTS = (SORT_CREATED, SORT_MTIME, SORT_CREATED_ASC, SORT_MTIME_ASC)
 
 
 def normalize_sort(order: str) -> str:
@@ -83,16 +86,19 @@ def normalize_sort(order: str) -> str:
 
 
 def sort_notes(notes: list[dict[str, Any]], order: str = SORT_CREATED) -> list[dict[str, Any]]:
-    """按指定口径倒序重排。
+    """按指定口径和方向重排。
 
     created：笔记生成时间（frontmatter），内容属性，重写正文不影响它。
     mtime：文件修改时间，“最近动过的”排前面——批量改过排版时顺序会一起变，
            这正是选它的人想要的。
+    后缀 _asc 表示正序（旧的 / 早的在前），默认倒序（新的在前）。
     两种口径都留了兜底键，保证同值时顺序稳定，不会每次刷新跳来跳去。
     """
-    if normalize_sort(order) == SORT_MTIME:
-        return sorted(notes, key=lambda n: (n["mtime"], n["created_ts"], n["id"]), reverse=True)
-    return sorted(notes, key=lambda n: (n["created_ts"], n["mtime"], n["id"]), reverse=True)
+    o = normalize_sort(order)
+    reverse = not o.endswith("_asc")
+    if o in (SORT_MTIME, SORT_MTIME_ASC):
+        return sorted(notes, key=lambda n: (n["mtime"], n["created_ts"], n["id"]), reverse=reverse)
+    return sorted(notes, key=lambda n: (n["created_ts"], n["mtime"], n["id"]), reverse=reverse)
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:

@@ -61,12 +61,15 @@ def list_concepts(q: str = "", limit: int = 500) -> dict[str, Any]:
     reviewable = len(review_svc.ai_candidates(items, tags, known))
     # 还没判过重点度、也没写释义的：概念页上点"补全释义"要处理的就是这些
     unjudged = sum(1 for i in items if i.get("core") is None)
+    # 还没判过学科的：概念页进页面时先补一次，否则「按主题」只能全堆在「其他」
+    unsubjected = sum(1 for i in items if i.get("subject_pending"))
     return {
         "total": len(items),
         "items": items[:limit],
         "hidden": hidden,
         "untagged": untagged,
         "reviewable": reviewable,
+        "unsubjected": unsubjected,
         # 有几条的上级被重新对齐过（模型写的父节点在列表里并不存在）。
         # 前端看到大于 0 就自动整理一次，把修正结果写回缓存。
         "stale": info.get("repaired", 0),
@@ -109,6 +112,33 @@ def classify_concepts(request: Request, force: bool = False) -> dict[str, Any]:
     client = LLMClient.from_settings(settings, request.app.state.store)
     result = tag_svc.classify(settings, client, names, contexts=contexts, force=force)
     log.info("概念判别：%s", result)
+    return {"ok": True, **result}
+
+
+@router.post("/concepts/subjects")
+def classify_subjects(request: Request, force: bool = False) -> dict[str, Any]:
+    """给概念补学科标签（数学 / 计算机 / 英语 / …）。
+
+    单独一趟：老缓存里只有「是不是知识点」，没有「属于哪一科」。
+    重跑 classify 会把已经判对的类别再花一次钱，还可能改坏；
+    这里只写 subject，cat / parent / canonical 一概不动。
+    """
+    settings = get_settings()
+    items = concept_svc.summary(settings)["items"]
+    tag_svc.annotate(items, tag_svc.load(settings))
+    names: list[str] = []
+    contexts: dict[str, str] = {}
+    for item in items:
+        # 分类信息挂在 tag_name（可能是别名）上，写也要写到同一个键上
+        name = item.get("tag_name") or item["name"]
+        names.append(name)
+        contexts[concept_svc.name_key(name)] = (
+            item.get("primary_note") or "（来自卡片）"
+        )
+    client = LLMClient.from_settings(settings, request.app.state.store)
+    result = tag_svc.classify_subjects(settings, client, names,
+                                       contexts=contexts, force=force)
+    log.info("学科判别：%s", result)
     return {"ok": True, **result}
 
 

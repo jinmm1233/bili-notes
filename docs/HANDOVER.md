@@ -1,6 +1,6 @@
 # BiliNotes 开发交接文档
 
-> **最后更新**：2026-11-10 18:40 ｜ 0.2.4 已发布；打赏面板改版后的新包已重传到线上
+> **最后更新**：2026-11-27 20:12 ｜ 0.2.14 已打包验收（50+21+43 项全绿），停在上传前一步
 > **用途**：接手或继续开发前先读这一份。它记录了「做了什么」「为什么这么做」「哪些路别再走一遍」。
 > **维护约定**：每完成一个功能，在「四、改动台账」加一行；踩到新坑，在「六、踩坑与禁令」补一条。这两节是本文档的核心价值。
 
@@ -64,6 +64,18 @@ FastAPI  app/main.py
 ## 四、改动台账
 
 按时间倒序。每行都能在 `.workbuddy/memory/YYYY-MM-DD.md` 找到更细的记录。
+
+### 2026-11-27 · 0.2.14 打包（20:12，上传前一步）
+
+本轮攒了 7 项改动一起发：框选标重点、本地视频、概念按学科、复习三档 + 快捷键、排序正倒序、更新弹窗、PDF 导白纸。升版本到 0.2.14，**只打包验收，未提交未发布**。
+
+- 构建：先把 `dist/BiliNotes` 改名挪走（防安全软件拦删除后 PyInstaller 仍报成功）；`.venv` 里 PyInstaller 6.22.3 打包，产物 633MB。
+- 验收：`verify_bundle.py` **50 项全绿**（含 ffmpeg 真跑、版本三处一致、12 秒不崩）；`verify_installer.py` **21 项全绿**（静默安装 → 启动 → 卸载，用户数据不被删）；`verify_fresh_install.py` **43 项全绿**（空 APPDATA 下 10 个功能页可达）。
+- 新模块探针：冻结环境 `import app.services.local_source,app.core.filepick,app.services.highlights` rc=0。
+- 产物：`installer/dist/BiliNotes-setup-0.2.14.exe`，224,746,495 字节，SHA256 `ba64f73273e3c192fc6de4069ebff34e3595e27c6fa9bd492d87a153f8784fde`。
+- 发布说明：`docs/release-notes-0.2.14.md` 已写好（校验值已填）。
+- 待办：源码未 git commit、未打 tag、Release 未上传；官网 `site/` 按用户要求这轮不动。
+- 顺带发现：`启动BiliNotes.bat` 只要 `dist` 里有 exe 就会启动打包版；调试源码要用新加的 `启动源码版.bat`（GBK 编码 + `.venv` + 8766 + 独立单实例锁）。
 
 ### 2026-11-10 · 0.2.4 音画锚定的真跑返工（08:00-08:30）
 
@@ -500,6 +512,11 @@ Edge 窗口还开着但显示 `127.0.0.1`（连不上）——服务跟着进程
   > 环境变量 `BILINOTES_GITHUB_REPO` > 打包默认值 `__update_repo__`。
   未配置就不联网；网络失败静默（国内连不上 GitHub 是常态），
   「查看发布页」始终可点作为手动兜底。
+- **发现新版的提示（2026-11-25 改版）**：原来是右下角轻提示条，容易被忽略；
+  改成居中 `<dialog id="updDlg">`，三个出口「去更新 / 以后再说 / 这个版本不再提醒」。
+  「去更新」「不再提醒」都写 `localStorage['bn.updateNotified']`（同版本只提一次），
+  「以后再说」只关本次、下次启动仍会提；有别的弹框开着时延后 3 秒重试，最多 3 次，
+  避免 `showModal()` 冲突抛错。检查失败仍然完全静默，不弹任何框。
 - **安装前必须退出主进程**：`app/window.py` 新增 `close()`；`updater.install()`
   启动安装器后关掉 Edge 窗口并退出，否则 Program Files 里的 exe 被占用，
   Inno Setup 会弹文件占用错误框（之前 `BiliNotesIsRunning()` 拦的就是这个）。
@@ -741,7 +758,7 @@ ASR 拼错的词匹配不上（漏标不误标）。
 | 1 | 排序键换成创建时间 | `services/library.py::created_ts / sort_notes` | 优先用 frontmatter 的 `created`（内容属性，改正文不动它），缺失/格式不认才退回 mtime。scan 结果新增 `created_ts` 字段 |
 | 2 | 口径可选 | `GET /library?sort=created|mtime`、`GET /library/search?sort=` | `created` 默认；`mtime` 给「最近动过的在前」这一需求。非法值静默回退 created，接口回报当前口径 |
 | 3 | 收藏夹「最近更新」 | `library.collections` | 取组内**最大** created_ts，不再依赖「第一篇」——按 mtime 排时第一篇未必最新 |
-| 4 | 前端 | `web/index.html`、`app.js`、`app.css` | 工具栏加排序下拉，选择存 `localStorage`（`bn.lib.sort`），刷新后保留；副标题显示「· 按生成时间 / 按最近修改」；手机上靠右与搜索按钮同行 |
+| 4 | 前端 | `web/index.html`、`app.js`、`app.css` | 工具栏加排序下拉，选择存 `localStorage`（`bn.lib.sort`），刷新后保留；副标题显示「· 按生成时间 / 按最近修改」；手机上靠右与搜索按钮同行。2026-11-25 加方向：四个选项 `created / created_asc / mtime / mtime_asc`，带 `_asc` 为正序（旧在前），不带仍是倒序，旧 localStorage 值天然兼容；副标题跟随显示「新在前 / 旧在前」 |
 | 5 | 测试 | `tests/smoke_library.py` | 造两篇「生成晚但先落盘 / 生成早但后落盘」的笔记，断言两种口径顺序相反；再重写正文验证「默认顺序不变、mtime 序变」；接口层验证 sort 参数与回退 |
 
 **教训（工程层面）**：排序键要选**内容属性**，不能选**文件系统属性**。mtime 只代表「最后一次写入」，
@@ -893,7 +910,7 @@ Service Worker**——所以 PWA/离线缓存那条路在手机上直接走不�
 
 | # | 功能 | 主要文件 | 要点 |
 |---|---|---|---|
-| 1 | 知识卡片 + 间隔重复 | `services/cards.py`、`api/routes_cards.py`、`web/*` | 从 notes.md 抽 10~20 张卡（概念/公式/步骤/易错/对比），SM-2 简化排期，四档评分，键盘 1~4，侧栏显示今日到期数 |
+| 1 | 知识卡片 + 间隔重复 | `services/cards.py`、`api/routes_cards.py`、`web/*` | 从 notes.md 抽 10~20 张卡（概念/公式/步骤/易错/对比），SM-2 简化排期，四档评分，键盘 A/S/D/F（忘记/模糊/记得/丢弃），侧栏显示今日到期数 |
 | 2 | 跨视频概念索引 | `services/concepts.py`、`api/routes_concepts.py`、`web/*` | 解析每篇「关键概念」表，按 `name_key` 归并（忽略空格/大小写/标点），详情列出每篇各自的解释 |
 | 3 | 排期规则显式化 | `services/cards.py::preview`、`web/*` | 后端复用同一个 `schedule()` 算出四档「多久后再来」下发；按钮两行显示；右侧「排期规则」弹窗 |
 
@@ -930,6 +947,9 @@ Service Worker**——所以 PWA/离线缓存那条路在手机上直接走不�
 | 20 | 知识地图重写 | 弃 jsdelivr CDN，Python 直接算布局输出静态 SVG；阅读器支持 mermaid flowchart 自绘 |
 | 21 | 画面要点 v3 | 从画面**有选择地取字**：PPT 题目/分点，太简略用讲解补全；不再是复述式「画面解读」 |
 | 22 | 数学公式适配 | 内置 KaTeX 0.16.11 到 `web/vendor/katex`；`services/mathfmt.py` 把 `[[3,2],[1,4]]`、`A^-1` 归一成 LaTeX |
+| 23 | 框选标重点 | `services/highlights.py`、`routes_library.py`、`web/app.js`：选区浮出工具条 → 包 `<mark class="hl" data-hl>`；底色沿用已有 `.markdown mark.hl`（模型 `==重点==` 也是这个 class），无 `data-hl` 的点击不接管。锚点存「原文 + 前后各 20 字」而非字符坐标，重生成笔记后重新定位；单独存笔记文件夹 `highlights.json`（绝不写 notes.md），整包下载随之带走，PDF 打印页走同一前端因此自带高亮 |
+| 24 | 本地视频 | `services/local_source.py`（新）、`core/filepick.py`（新）、`services/pipeline.py`、`api/routes.py`、`main.py`、`web/*`：总览「快速处理单个视频」加来源切换（B站链接 / 本地文件·实验）。任务 url 用 `file://`，probe 走 ffprobe、音轨用 ffmpeg 抽 16k 单声道、同名字幕（srt/vtt/ass）优先；`VideoMeta.local_path` 只在内存不落盘（导出不泄漏盘符）；无音轨录屏退回画面整理。`/api/tasks/local` 与 `/api/system/pick-video` 都只允许本机调用；文件选择走 Windows `GetOpenFileNameW` / macOS osascript / Linux zenity，弹不出时前端回退手填路径 |
+| 25 | PDF 导白纸修复 | `services/export_pdf.py`、`main.py`、`web/app.js`：根因是 `--print-to-pdf` 在异步取数渲染之前就截图，短笔记必白。改为优先用 DevTools 协议：开新标签 → `Page.bringToFront` → 轮询 `data-print-ready` → 等 0.5s 稳定 → `Page.printToPDF`；失败自动退回命令行老路。打印页同时把笔记+高亮内联进 HTML（`window.__PRINT_NOTE__`），前端同步渲染，不再依赖接口往返；`init()` 里打印分支前置并 return，避免先加载总览拖慢就绪 |
 | 23 | 任务暂停/恢复 | `pause_event` + 检查点 gate，1-2 秒生效；支持全部暂停/继续 |
 | 24 | 知识库按收藏夹分组 | frontmatter 写 `collection`；两级浏览；自建收藏夹 + 多选移动 + 删除退回默认 |
 | 25 | 删除笔记 | 移入 `data_dir/trash/`（保留 30 项），不 rmtree；删除后按 (BV, 分P) 可重新处理 |
@@ -998,12 +1018,12 @@ Service Worker**——所以 PWA/离线缓存那条路在手机上直接走不�
 
 ### 5.5 知识卡片与 SM-2
 
-| 评分 | 间隔 | ease | 其他 |
+| 操作 | 间隔 | ease | 其他 |
 |---|---|---|---|
 | 忘记 again | 10 分钟 | −0.2 | reps 归零，lapses+1 |
-| 模糊 hard | 1 天，或 `interval × 1.2` | −0.15 | 小幅增长 |
-| 记得 good | 1 天 → 3 天 → `interval × ease` | 不变 | — |
-| 太简单 easy | 3 天，或 `interval × ease × 1.3` | +0.15 | 增长更快 |
+| 模糊 hard | 1 天，或 `interval × 1.5` | −0.15 | 小幅增长 |
+| 记得 good | 3 天 → 7 天 → `interval × ease` | 不变 | 首次不再和「模糊」同为 1 天 |
+| 丢弃 drop | — | — | 不排期：前端先弹 `#dropDlg` 确认（默认焦点在「留着」，Esc 等同取消），确认后 `DELETE /cards/{id}`，以后不再出现 |
 
 `ease` 限制 1.3~2.8，间隔封顶 180 天。「多久后再来」由 `preview(card)` 复用同一个 `schedule()` 算出，**保证显示与执行一致**（有测试断言）。
 
@@ -1143,6 +1163,7 @@ Service Worker**——所以 PWA/离线缓存那条路在手机上直接走不�
 | 用 `Popen` 的 `proc.wait()` 判断 Edge 应用窗口关没关 | Edge 多进程会把窗口交给常驻进程、启动进程提前退出，导致服务跟着收摊（实测 12 秒后 EXIT=0 而窗口还在）；必须轮询窗口本身（`EnumWindows`） |
 | 用普通 `urlopen` 访问 `127.0.0.1` | 系统有 `HTTP_PROXY` 且 `NO_PROXY` 为空时会被代理劫持（502），`find_running` 失效 → 多实例 + 端口漂移 → 「网址又断了」。本机请求统一用 `core.local.urlopen_local`，外部请求照常用代理 |
 | 验收脚本报 FAIL 就直接调大超时 / 放宽断言 | 先量真实耗时、手动起一次进程、查环境变量，分清是产物坏了还是测试环境变了 |
+| 用 `--print-to-pdf` 直接截「要等接口才有内容」的页面 | 浏览器在页面 load 时就截图，前端还在等数据，导出是白纸（短笔记必现，长笔记只是碰巧赶上）。必须用 CDP 等 `data-print-ready` 再 `Page.printToPDF`；命令行只留作兜底 |
 
 ### 6.2 高频小坑
 
@@ -1351,7 +1372,7 @@ pyinstaller build.spec --noconfirm   # 产物 dist/BiliNotes/BiliNotes.exe
 - **入口必须是 `entry.py`**：`app/main.py` 被当顶层脚本执行时包内相对导入会 ImportError。
 - `vendor/`（python-docx / lxml / latex2mathml / mathml2omml，约 14MB）随包分发，`app/__init__.py` 把它加进 `sys.path`。
 - **不打包 ffmpeg**：完整构建 450MB，改为运行时一键下载 92MB。
-- 当前 `dist/` 是旧代码，**验收后再打包**。
+- 当前 `dist/BiliNotes` 是 0.2.14 的产物（2026-11-27 打包，验收 50 项全绿）。
 
 ---
 
@@ -1371,7 +1392,7 @@ pyinstaller build.spec --noconfirm   # 产物 dist/BiliNotes/BiliNotes.exe
 1. **`cookies.txt` 是明文**（B站登录态）。它不是 API Key，但如果把整个 `%APPDATA%\BiliNotes` 发给别人，登录态会泄露。要不要把 cookie 也纳入 DPAPI 加密（用时临时解密）？如果分发只发 exe 目录则无此风险。
 2. **讲义风格**现在只有「名师课堂」一种，是否加「应试提纲」下拉（考点清单 + 解题模板 + 易错陷阱）。
 3. ~~**历史重复卡片**~~（已做，2026-11-07）：复习页有「查重」按钮，默认只报告、确认后才删；现有 3 组已清完，33 → 30 张。备份在 `%APPDATA%\BiliNotes\cards.json.bak-20261107`。
-4. **重新打包 exe** 的时机（当前 dist 是 11-01 的旧代码，之后所有改动都还没进包）。
+4. ~~**重新打包 exe**~~（已做，2026-11-27）：0.2.14 已打包并三套验收全绿，停在发布前一步，等确认上传。
 
 ---
 

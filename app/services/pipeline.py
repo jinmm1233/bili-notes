@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Callable
 
 from ..core.config import Settings
-from ..core.errors import AppError, CancelledError
+from ..core.errors import AppError, CancelledError, FFmpegError
 from ..core.llm import PROVIDERS, LLMClient
 from ..core.models import Chunk, Frame, SceneSpan, Segment, VideoNote
 from ..core.secretstore import SecretStore
 from . import anchors as anchors_mod
-from . import bili_auth, chunking, concept_review, downloader, exporter, itinerary, lecture, mindmap, ocr, subtitle, summarize, text_check, transcribe, wordbook, words
+from . import bili_auth, chunking, concept_review, downloader, exporter, itinerary, lecture, local_source, mindmap, ocr, subtitle, summarize, text_check, transcribe, wordbook, words
 from . import frames as frames_mod
 
 log = logging.getLogger(__name__)
@@ -116,7 +116,11 @@ class Pipeline:
 
         # 1. 元数据
         self._emit("probe", 2, "解析视频信息…")
-        meta, info = downloader.probe(self.settings, url)
+        if local_source.is_local_url(url):
+            # 本地视频：url 是 file:// 地址，直接读磁盘，不经过 yt-dlp
+            meta, info = local_source.probe(local_source.from_url(url))
+        else:
+            meta, info = downloader.probe(self.settings, url)
         # 来源收藏夹：从收藏夹批量导入时带上，知识库按它分组
         if opts.collection:
             meta.collection = opts.collection
@@ -356,6 +360,10 @@ class Pipeline:
         第 2 步是决定性的：绝大多数视频都有 AI 字幕，拿到它就等于
         跳过 480MB 模型下载和十几分钟 CPU 推理。
         """
+        # 本地视频没有在线字幕可查，走单独一条路：同名字幕 > 抽音轨转写
+        if getattr(meta, "local_path", ""):
+            return self._prepare_text_local(meta, work)
+
         track = subtitle.pick_subtitle_track(info)
         if track:
             lang, url = track
@@ -401,6 +409,39 @@ class Pipeline:
             self.settings, meta.webpage_url, work, kind="audio",
             on_progress=lambda p, m: self._emit_sub("text", 8 + p * 0.22, m),
         )
+        self._emit_sub("text", 30, "音频就绪，等待转写")
+        return [], "asr", audio
+
+    # ---- 文本素材（本地视频）：同名字幕优先，没有就抽音轨 ----
+    def _prepare_text_local(
+        self, meta, work: Path
+    ) -> tuple[list[Segment], str, Path | None]:
+        """本地文件没有 CC / B站 AI 字幕，只有两种来源：
+
+        1. 视频旁边的同名字幕（.srt / .vtt / .ass）—— 秒级，质量最好
+        2. 抽音轨做本地语音转写 —— 和 B站视频没有字幕时完全一样的路径
+        """
+        video = Path(meta.local_path)
+        self._emit_sub("text", 8, "查找同名字幕…")
+        found = local_source.load_subtitle(video, work)
+        if found:
+            segments, source = found
+            self._emit_sub("text", 100, f"本地字幕 {len(segments)} 句")
+            return segments, source, None
+
+        self._emit_sub("text", 8, "提取音轨…")
+        try:
+            audio = local_source.extract_audio(video, work)
+        except FFmpegError as exc:
+            # 录屏常见没有音轨。B站流程遇到无音轨会退回「只看画面」，
+            # 本地这条也得一样，不能因为抽不出音频就整个任务失败。
+            log.warning("本地视频没有可用音轨：%s", exc)
+            self.warnings.append(
+                "这个视频没有可用音轨，笔记已改用画面内容整理；"
+                "如果需要讲解内容，请确认原文件带声音。"
+            )
+            self._emit_sub("text", 100, "没有音轨，改用画面内容")
+            return [], "asr", None
         self._emit_sub("text", 30, "音频就绪，等待转写")
         return [], "asr", audio
 
@@ -625,12 +666,17 @@ class Pipeline:
             return [], None
         video: Path | None = None
         try:
-            self._emit_sub("vision", 2, "下载画面（480p，仅用于定位）")
-            video = downloader.download_media(
-                self.settings, meta.webpage_url, work, kind="video",
-                max_height=opts.max_height,
-                on_progress=lambda p, m: self._emit_sub("vision", 2 + p * 0.28, m),
-            )
+            if getattr(meta, "local_path", ""):
+                # 本地视频不需要下载：原文件就是最高画质，抽帧直接从它取
+                video = Path(meta.local_path)
+                self._emit_sub("vision", 10, "读取本地视频画面…")
+            else:
+                self._emit_sub("vision", 2, "下载画面（480p，仅用于定位）")
+                video = downloader.download_media(
+                    self.settings, meta.webpage_url, work, kind="video",
+                    max_height=opts.max_height,
+                    on_progress=lambda p, m: self._emit_sub("vision", 2 + p * 0.28, m),
+                )
             self._check_cancel()
 
             self._emit_sub("vision", 32, "检测画面切换…")
@@ -716,9 +762,13 @@ class Pipeline:
             # 同页只留一张时，锚点要改指到入选的那张（语义是「哪一页」）
             anchors_mod.reconcile_anchors(chunks, selected)
 
-            # 低清候选只负责定位，进笔记的这几十张换成原画质
+            # 低清候选只负责定位，进笔记的这几十张换成原画质。
+            # 本地视频没有流地址，直接把原文件当「高清源」——还是同一套抽帧代码。
             if selected and self.settings.hd_frames:
-                hi_url = downloader.pick_stream_url(info, self.settings.hd_frame_edge)
+                hi_url = (
+                    getattr(meta, "local_path", "")
+                    or downloader.pick_stream_url(info, self.settings.hd_frame_edge)
+                )
                 if hi_url:
                     self._emit("frames", 82, f"高清重取 {len(selected)} 张关键帧…")
                     upgraded = frames_mod.upgrade_selected(

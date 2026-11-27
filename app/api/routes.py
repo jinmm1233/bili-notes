@@ -18,12 +18,12 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import lan
+from ..core import filepick, lan
 from ..core.config import get_settings, save_overrides
-from ..core.errors import DependencyMissingError
+from ..core.errors import DependencyMissingError, VideoUnavailableError
 from ..core.llm import LLMClient, PROVIDERS, test_connection
 from ..core.secretstore import SecretStore
-from ..services import cache_clean, ffmpeg_boot
+from ..services import cache_clean, ffmpeg_boot, local_source
 from ..services.task_manager import FINAL, TaskManager
 
 log = logging.getLogger(__name__)
@@ -41,6 +41,16 @@ def _store(request: Request) -> SecretStore:
 # ---------- 入参模型 ----------
 class CreateTaskIn(BaseModel):
     url: str = Field(min_length=2, max_length=2000)
+    frames: bool = True
+    ocr: bool = True
+    summary: bool = True
+    height: int = Field(default=480, ge=144, le=1080)
+    provider: str | None = None
+
+
+class CreateLocalIn(BaseModel):
+    """本地视频：只收一个真实路径，其余选项与 B 站任务一致。"""
+    path: str = Field(min_length=2, max_length=2000)
     frames: bool = True
     ocr: bool = True
     summary: bool = True
@@ -93,6 +103,31 @@ def create_task(body: CreateTaskIn, request: Request) -> dict[str, Any]:
 
     task = _mgr(request).create(body.url, body.model_dump(exclude={"url"}))
     return {"id": task.id, "status": task.status}
+
+
+@router.post("/tasks/local")
+def create_local_task(body: CreateLocalIn, request: Request) -> dict[str, Any]:
+    """本地视频建任务。
+
+    只允许本机调用：开了局域网访问后，别人不该能借这个接口
+    让这台电脑去读它自己的任意文件。
+    """
+    if not lan.is_local(request):
+        raise HTTPException(403, "本地视频只能在运行软件的这台电脑上添加")
+    settings = get_settings()
+    output = Path(settings.output_dir).resolve()
+    if not output.is_dir():
+        raise HTTPException(400, "输出目录不可用，请在设置里重新选择")
+
+    try:
+        path = local_source.validate_video(body.path)
+    except VideoUnavailableError as exc:
+        raise HTTPException(400, exc.message) from exc
+
+    task = _mgr(request).create(local_source.to_url(path), body.model_dump(exclude={"path"}))
+    # 队列卡片先显示文件名；任务跑完会换成笔记标题（两者通常一样）
+    task.title = path.stem
+    return {"id": task.id, "status": task.status, "title": task.title}
 
 
 @router.get("/tasks")
@@ -332,6 +367,24 @@ def write_settings(body: SettingsIn, request: Request) -> dict[str, Any]:
 @router.get("/system/ffmpeg")
 def read_ffmpeg() -> dict[str, Any]:
     return ffmpeg_boot.status()
+
+
+@router.post("/system/pick-video")
+def pick_local_video(request: Request) -> dict[str, Any]:
+    """弹系统文件选择框，返回文件绝对路径。
+
+    只在点击时调用，会阻塞当前请求直到用户选完或取消；
+    取消不算错误（cancelled=True），环境不支持则返回可读原因让前端改成手填。
+    """
+    if not lan.is_local(request):
+        raise HTTPException(403, "只能在本机上选择文件")
+    try:
+        path = filepick.pick_video()
+    except filepick.PickerUnavailable as exc:
+        return {"ok": False, "message": str(exc)}
+    if not path:
+        return {"ok": False, "cancelled": True}
+    return {"ok": True, "path": path}
 
 
 @router.post("/system/ffmpeg/install")

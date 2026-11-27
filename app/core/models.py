@@ -52,6 +52,10 @@ class VideoMeta:
     series_id: str = ""
     series_title: str = ""
     series_order: int = 0
+    # 本地视频的绝对路径（只在内存里用，不写进 meta.json / 笔记 frontmatter）：
+    # 一是导出 zip 可能被分享出去，不该带上别人的盘符和用户名；
+    # 二是重试时任务本身就是用 file:// 地址重新解析，不需要它落盘。
+    local_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {

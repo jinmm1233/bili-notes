@@ -19,7 +19,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','aurora'); }
 })();
 </script>
-<link rel="stylesheet" href="/static/app.css?v=20261124b">
+<link rel="stylesheet" href="/static/app.css?v=20261126a">
 <!-- 数学公式（矩阵/行列式/分式）用 KaTeX 渲染，资源随包分发，离线可用 -->
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 </head>
@@ -107,8 +107,13 @@
       <div class="dash-row">
         <div class="panel">
           <div class="panel-title">快速处理单个视频</div>
+          <div class="seg quick-seg" id="quickMode" role="group" aria-label="视频来源">
+            <button class="seg-item active" data-qmode="bili">B站链接</button>
+            <button class="seg-item" data-qmode="local">本地文件 <em class="exp">实验</em></button>
+          </div>
           <div class="url-row">
             <input type="text" id="quickUrl" placeholder="粘贴链接，或输入 BV 号（支持 ?p=2）" autocomplete="off">
+            <button class="btn ghost small" id="quickPick" hidden>选择文件…</button>
             <button class="btn primary" id="quickStart">开始</button>
           </div>
           <div class="chips">
@@ -117,7 +122,7 @@
             <label class="chip"><input type="checkbox" id="qSummary" checked><span>AI 总结</span></label>
             <label class="chip"><input type="checkbox" id="qLecture"><span>知识点讲义</span></label>
           </div>
-          <p class="hint">画面文字识别是 BiliNotes 的差异点：PPT、代码、公式都能进笔记</p>
+          <p class="hint" id="quickHint">画面文字识别是 BiliNotes 的差异点：PPT、代码、公式都能进笔记</p>
         </div>
 
         <div class="panel grow">
@@ -245,9 +250,11 @@
           <input type="text" id="kbSearch" placeholder="搜索标题或正文…" autocomplete="off">
           <button class="btn primary small" id="btnSearch">搜索</button>
           <button class="btn ghost small" id="btnClearSearch" hidden>清除</button>
-          <select id="libSort" class="lib-sort" title="列表按什么排前面">
-            <option value="created">按生成时间</option>
-            <option value="mtime">按修改时间</option>
+          <select id="libSort" class="lib-sort" title="列表按什么、哪个方向排">
+            <option value="created">生成时间 · 新在前</option>
+            <option value="created_asc">生成时间 · 旧在前</option>
+            <option value="mtime">修改时间 · 新在前</option>
+            <option value="mtime_asc">修改时间 · 旧在前</option>
           </select>
           <button class="btn ghost small" id="btnNewCollection">+ 收藏夹</button>
         </div>
@@ -277,9 +284,9 @@
           <label class="chip kg-toggle" title="只保留视频里真正讲过（给了定义或解释）的概念，顺带一提的默认不显示；取消勾选可看全部">
             <input type="checkbox" id="conceptCoreOnly" checked><span>只看讲透的</span>
           </label>
-          <div class="seg" id="conceptGroupMode" title="按主题：概念挂在所属方法下面；按视频：按笔记分组">
-            <button class="seg-item active" data-gm="topic">按主题</button>
-            <button class="seg-item" data-gm="note">按视频</button>
+          <div class="seg" id="conceptGroupMode" title="按学科：数学、计算机等各归一堆，同类概念不再散开；按合集：系列下面再分视频">
+            <button class="seg-item active" data-gm="subject">按学科</button>
+            <button class="seg-item" data-gm="series">按合集</button>
           </div>
           <div class="seg" id="conceptFilter">
             <button class="seg-item active" data-cf="all">全部</button>
@@ -426,16 +433,17 @@
 
         <div class="review-actions" id="reviewActions" hidden>
           <button class="btn grade again" data-grade="again">
-            <span class="g-txt"><b>忘记</b><em class="g-next" data-next="again"></em></span><kbd>1</kbd>
+            <span class="g-txt"><b>忘记</b><em class="g-next" data-next="again"></em></span><kbd>A</kbd>
           </button>
           <button class="btn grade hard" data-grade="hard">
-            <span class="g-txt"><b>模糊</b><em class="g-next" data-next="hard"></em></span><kbd>2</kbd>
+            <span class="g-txt"><b>模糊</b><em class="g-next" data-next="hard"></em></span><kbd>S</kbd>
           </button>
           <button class="btn grade good" data-grade="good">
-            <span class="g-txt"><b>记得</b><em class="g-next" data-next="good"></em></span><kbd>3</kbd>
+            <span class="g-txt"><b>记得</b><em class="g-next" data-next="good"></em></span><kbd>D</kbd>
           </button>
-          <button class="btn grade easy" data-grade="easy">
-            <span class="g-txt"><b>太简单</b><em class="g-next" data-next="easy"></em></span><kbd>4</kbd>
+          <button class="btn grade drop" data-grade="drop"
+            title="这张卡太简单或出得不好？直接删掉，以后不再出现">
+            <span class="g-txt"><b>丢弃</b><em class="g-next" data-next="drop"></em></span><kbd>F</kbd>
           </button>
         </div>
 
@@ -902,6 +910,14 @@
   <article class="markdown" id="readerBody"></article>
 </div>
 
+<!-- 框选标重点：选区上方浮出的小工具条；点已有高亮时的取消气泡 -->
+<div class="hl-bar" id="hlBar" hidden>
+  <button class="hl-act" id="hlMark"><span class="hl-dot"></span>标重点</button>
+</div>
+<div class="hl-pop" id="hlPop" hidden>
+  <button class="hl-act danger" id="hlRemove">取消标记</button>
+</div>
+
 <!-- 合集选集：看清楚一共多少集，按序号挑着做 -->
 <dialog class="dlg pick-dlg" id="pickDlg">
   <h3 id="pickTitle">合集选集</h3>
@@ -959,9 +975,9 @@
     按钮上会直接写出「按下去会推到多久之后」。</p>
   <table class="rules-table">
     <tr><th>忘记</th><td>10 分钟后再来一次，连击清零、熟练度下调</td></tr>
-    <tr><th>模糊</th><td>先放 1 天；之后每次间隔只小幅增长</td></tr>
-    <tr><th>记得</th><td>第 1 次 1 天、第 2 次 3 天，之后按熟练度递增</td></tr>
-    <tr><th>太简单</th><td>起步 3 天，熟练度上调，之后增长更快</td></tr>
+    <tr><th>模糊</th><td>先放 1 天；之后每次间隔 ×1.5 小幅增长（记得不牢，多来几遍）</td></tr>
+    <tr><th>记得</th><td>第 1 次 3 天、第 2 次 7 天，之后按熟练度递增</td></tr>
+    <tr><th>丢弃</th><td>从卡片库删除，之后不再出现——太简单或出得不好的卡用它</td></tr>
   </table>
   <p class="hint">
     间隔最长半年；熟练度（ease）限制在 1.3~2.8——忘得越多，这张卡来得越勤。
@@ -969,6 +985,19 @@
   </p>
   <div class="dlg-foot">
     <button class="btn primary small" id="rulesClose">知道了</button>
+  </div>
+</dialog>
+
+<!-- 丢弃卡片：删了不能恢复，先确认一次 -->
+<dialog class="dlg drop-dlg" id="dropDlg">
+  <h3>丢弃这张卡片？</h3>
+  <p class="hint">
+    <span class="drop-front" id="dropDlgFront" hidden></span>
+    丢弃会把这张卡从卡片库删掉，以后不再出现，<b>也没法恢复</b>。
+  </p>
+  <div class="dlg-foot">
+    <button class="btn ghost small" id="dropDlgCancel" autofocus>留着</button>
+    <button class="btn danger-solid small" id="dropDlgOk">丢弃</button>
   </div>
 </dialog>
 
@@ -1030,12 +1059,18 @@
 </dialog>
 
 <div class="toast" id="toast" hidden></div>
-<div class="upd-toast" id="updToast" hidden>
-  <span class="upd-toast-dot"></span>
-  <span class="upd-toast-text" id="updToastText">发现新版本</span>
-  <button class="upd-toast-go" id="updToastGo">去看看</button>
-  <button class="upd-toast-x" id="updToastX" title="不再提示这个版本">×</button>
-</div>
+
+<!-- 发现新版本：居中弹一次，同一版本只提醒一次 -->
+<dialog class="dlg upd-dlg" id="updDlg">
+  <h3>有新版本 <span id="updDlgVer"></span></h3>
+  <p class="hint" id="updDlgText">去设置页就能下载安装。</p>
+  <p class="hint upd-note">升级只替换程序本体，笔记、卡片、配置和 API Key 都不受影响。</p>
+  <div class="dlg-foot">
+    <button class="btn ghost small upd-never" id="updDlgNever">这个版本不再提醒</button>
+    <button class="btn ghost small" id="updDlgLater">以后再说</button>
+    <button class="btn primary small" id="updDlgGo">去更新</button>
+  </div>
+</dialog>
 
 <!-- 进入设置页时的保存提醒：改动不会自动保存 -->
 <dialog class="dlg save-tip-dlg" id="saveTipDlg">
@@ -1048,6 +1083,6 @@
 </dialog>
 
 <script src="/static/vendor/katex/katex.min.js"></script>
-<script src="/static/app.js?v=20261125a"></script>
+<script src="/static/app.js?v=20261126b"></script>
 </body>
 </html>

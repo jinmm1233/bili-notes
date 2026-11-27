@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 
 TAG_FILE = "concept_tags.json"
 CATS = ("knowledge", "place", "soup", "trivial", "step", "relation", "artifact", "other")
+# 学科：概念页「按主题」时的第一层分组。cat 决定"要不要展示"，subject 决定"归到哪一科"。
+# 顺序即页面上的分组顺序，"其他"永远垫底。
+SUBJECTS = ("数学", "计算机", "英语", "物理", "心理学", "经济", "其他")
 # 默认折叠：景点、鸡汤、常识、例题步骤、关系判断、变量占位符
 HIDDEN_CATS = ("place", "soup", "trivial", "step", "relation", "artifact")
 MAX_BATCH = 40
@@ -81,6 +84,30 @@ _SYSTEM = """你在帮一个学习笔记软件整理「概念索引」。用户�
 只输出 JSON：{"tags":[{"name":"原样返回","cat":"knowledge","parent":"","canonical":""}]}
 """
 
+_SUBJECT_SYSTEM = """你在给学习笔记的「概念索引」打学科标签。只判学科，不要改类别、层级或别名。
+
+学科只能从下面七个里选一个：
+- 数学：线性代数、微积分、概率统计、离散数学、数论、优化、证明。
+  典型：矩阵、行列式、向量、秩、特征值、极限、导数、积分、概率、不等式、整数规划。
+- 计算机：计算机组成、操作系统、网络、数据库、编程语言、数据结构与算法实现、开发工具。
+  典型：缓存、进程、线程、内存、指针、汇编、指令、链接、虚拟内存、复杂度、NP、归约、Git、Claude Code。
+- 英语：单词、词根词缀、语法、时态、从句、发音、听力、口语、翻译。
+- 物理：力学、电磁学、电路、光学、热学、量子。
+- 心理学：情绪、焦虑、抑郁、认知、自我、正念、依恋、创伤。
+- 经济：金融、投资、股票、基金、会计、财务、市场、供需、利率。
+- 其他：跨学科、学习方法、软件操作、信息不足、无法判断。
+
+判断规则：
+1. 看概念本身的知识归属，不看它来自哪门课。
+   例：「矩阵连乘问题」核心是矩阵运算 → 数学；「高速缓存」→ 计算机。
+2. 算法课里的数学对象（矩阵、动态规划的状态转移、NP 归约证明）优先按数学对象判；
+   讲实现、系统、工具、命令的判计算机。
+3. 拿不准就「其他」，不要硬塞。
+4. 每一行都必须带 subject，且只能是上面七个词之一。
+
+只输出 JSON：{"items":[{"name":"原样返回","subject":"数学"}]}
+"""
+
 # 明确属于知识点的构词。命中即放过，省一次模型调用，也避免模型误判。
 _TECH = re.compile(
     r"(定理|公式|算法|矩阵|函数|证明|复杂度|规划|约束|映射|不等式|方程式?|"
@@ -117,6 +144,26 @@ _TRIVIAL = re.compile(r"^[A-Za-z]:|^[A-Za-z]盘$|安装包|安装目录|双击|�
 _SOUP = re.compile(
     r"(也要|都没关系|也没关系|就好了|才是|不要怕|别怕|原谅|放下|接纳|坚持|"
     r"相信自己|努力|值得|意义|慢慢来|做自己|爱自己|加油|熬过去|会好的)"
+)
+
+# 学科的本地兜底：模型没配 / 调用失败时也能分个大概。
+# 顺序就是优先级：先判特征更专一的科目，再判容易和别的科目抢词的（函数、线性、算法）。
+_SUBJECT_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("英语", re.compile(r"(单词|词汇|词根|词缀|语法|时态|从句|发音|音标|听力|口语|翻译|英文|英语|句子成分)")),
+    ("物理", re.compile(r"(电场|磁场|电容|电阻|电路|电流|电压|电势|电荷|力学|牛顿|动量|能量守恒|光学|折射|衍射|热力学|量子|相对论)")),
+    ("心理学", re.compile(r"(焦虑|抑郁|情绪|认知|心理|正念|依恋|创伤|自我同情|压力|人格|潜意识)")),
+    ("经济", re.compile(r"(经济|金融|投资|股票|基金|会计|财务|成本|利润|供需|通胀|利率|GDP)")),
+    ("计算机", re.compile(
+        r"(缓存|进程|线程|内存|指针|汇编|寄存器|指令|虚拟内存|页表|文件系统|链接器|"
+        r"操作系统|网络协议|TCP|HTTP|数据库|SQL|Git|Python|Java|C\+\+|API|CPU|GPU|"
+        r"并发|死锁|调度|栈|堆|函数调用|闭包|编译|中断|异常控制流|"
+        r"Claude|Cursor|IDE|命令行|终端|编辑器|"
+        r"NP|SAT|可满足|归约|复杂度|数据结构|算法|程序|代码|变量|动态规划|贪心|回溯|分治)")),
+    ("数学", re.compile(
+        r"(矩阵|行列式|向量|秩|特征值|特征向量|线性|正交|内积|积分|微分|导数|极限|"
+        r"概率|统计|期望|方差|定理|证明|不等式|多项式|整数规划|单纯形|数论|集合|映射|"
+        r"行变换|列变换|增广矩阵|单位矩阵|初等变换|"
+        r"方程|函数|数列|级数|排列|组合)")),
 )
 
 
@@ -186,6 +233,121 @@ def get_canonical(tags: dict[str, dict[str, Any]], name: str) -> str:
 def get_parent(tags: dict[str, dict[str, Any]], name: str) -> str:
     """所属的上级方法/主题；本身就是顶层概念时返回空串。"""
     return ((tags.get(name_key(name)) or {}).get("parent") or "").strip()
+
+
+def get_subject(tags: dict[str, dict[str, Any]], name: str) -> str:
+    """学科。没判过也返回「其他」，页面上不会出现空分组。"""
+    subject = str((tags.get(name_key(name)) or {}).get("subject") or "").strip()
+    return subject if subject in SUBJECTS else "其他"
+
+
+def subject_heuristic(name: str) -> str:
+    """不用模型的学科兜底。只认强特征词，认不出就「其他」。"""
+    text = (name or "").strip()
+    for subject, pattern in _SUBJECT_RULES:
+        if pattern.search(text):
+            return subject
+    return "其他"
+
+
+def _merge_subject(tags: dict[str, dict[str, Any]], name: str,
+                   subject: str, src: str) -> bool:
+    """只写 subject，不碰 cat / parent / canonical。
+
+    学科补判可能先于类别判别跑（比如刚生成的新概念），这时先建一条最小记录；
+    src=rule 允许之后的模型判别覆盖 cat，不会把条目钉死。
+    """
+    key = name_key(name)
+    if not key or subject not in SUBJECTS:
+        return False
+    row = tags.get(key)
+    if row is None:
+        row = {"name": name, "cat": "other", "parent": "", "canonical": "",
+               "src": "rule", "at": time.time()}
+        tags[key] = row
+    if row.get("subject_src") == "manual" and src != "manual":
+        return False
+    if row.get("subject") == subject and row.get("subject_src") == src:
+        return False
+    if row.get("subject") == subject and row.get("subject_src") == "llm" and src == "rule":
+        return False
+    row["subject"] = subject
+    row["subject_src"] = src
+    row["subject_at"] = time.time()
+    return True
+
+
+def classify_subjects(settings: Settings, client: LLMClient | None,
+                      names: Iterable[str], contexts: dict[str, str] | None = None,
+                      force: bool = False) -> dict[str, Any]:
+    """给概念补学科标签。
+
+    为什么单独一趟：老用户的 concept_tags.json 已经有 cat，但没有 subject。
+    重跑 classify 既不必要（会重新花钱判一遍类别），又可能把已经判对的类别改坏，
+    所以这里只补缺失的学科，cat / parent / canonical 一概不动。
+    """
+    tags = load(settings)
+    contexts = contexts or {}
+    todo: dict[str, str] = {}
+    for name in names:
+        if not name:
+            continue
+        key = name_key(name)
+        row = tags.get(key) or {}
+        # 规则判过的也允许模型再判一次（rule 可以被 llm 升级）；
+        # 已经模型判过、或用户手改过的，不重复花钱。
+        if (not force and row.get("subject") in SUBJECTS
+                and row.get("subject_src") != "rule"):
+            continue
+        todo[key] = name
+    if not todo:
+        return {"tagged": 0, "source": "none", "pending": 0}
+
+    changed = 0
+    source = "rule"
+
+    if client is not None:
+        pending = list(todo.values())
+        for start in range(0, len(pending), MAX_BATCH):
+            batch = pending[start:start + MAX_BATCH]
+            try:
+                lines = []
+                for n in batch:
+                    ctx = (contexts.get(name_key(n)) or "").strip()
+                    lines.append(f"- {n}" + (f"（来自：{ctx[:24]}）" if ctx else ""))
+                data = client.complete_json(
+                    _SUBJECT_SYSTEM,
+                    "请给下面这些概念判学科：\n" + "\n".join(lines),
+                    max_tokens=1600,
+                )
+            except Exception as exc:        # 模型抽风就退回规则，不让接口炸
+                log.warning("学科判别调用失败，退回规则：%s", exc)
+                break
+            rows = data.get("items") if isinstance(data, dict) else data
+            if not isinstance(rows, list):
+                break
+            by_key = {
+                name_key(r.get("name") or ""): r
+                for r in rows if isinstance(r, dict)
+            }
+            for name in batch:
+                row = by_key.get(name_key(name)) or {}
+                subject = str(row.get("subject") or "").strip()
+                if subject in SUBJECTS:
+                    changed += int(_merge_subject(tags, name, subject, "llm"))
+            source = "llm"
+
+    # 模型漏掉的、或根本没配模型的，用规则补
+    for name in todo.values():
+        if tags.get(name_key(name), {}).get("subject") not in SUBJECTS:
+            changed += int(_merge_subject(tags, name, subject_heuristic(name), "rule"))
+
+    if changed:
+        save(settings, tags)
+
+    left = sum(1 for name in todo.values()
+               if tags.get(name_key(name), {}).get("subject") not in SUBJECTS)
+    return {"tagged": changed, "source": source, "pending": left}
 
 
 def _merge(tags: dict[str, dict[str, Any]], name: str, cat: str,
@@ -392,6 +554,10 @@ def annotate(items: list[dict[str, Any]], tags: dict[str, dict[str, Any]]) -> di
         item["parent"] = parent
         item["parent_key"] = name_key(parent) if parent else ""
         item["canonical"] = get_canonical(tags, name)
+        subject = str(row.get("subject") or "").strip()
+        item["subject"] = subject if subject in SUBJECTS else "其他"
+        # 判过「其他」的也算有结论，不再重复花钱；只有完全没判过才 pending
+        item["subject_pending"] = subject not in SUBJECTS
         if parent != stored and row.get("src") != "manual":
             repaired += 1
     return {"repaired": repaired}
